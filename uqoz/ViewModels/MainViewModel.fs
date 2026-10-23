@@ -3,47 +3,53 @@ namespace uqoz.ViewModels
 open System
 open System.Collections.ObjectModel
 open System.Threading.Tasks
+open Avalonia
+open Avalonia.Styling
 open Avalonia.Threading
 open CommunityToolkit.Mvvm.ComponentModel
 open CommunityToolkit.Mvvm.Input
 open uqoz.Firebase
 
 /// Сообщение, уже расшифрованное для показа в UI.
-type MessageItem(sender: string, text: string, timestamp: DateTime) =
+type MessageItem(sender: string, text: string, timestamp: DateTime, isMine: bool) =
     member val Sender = sender with get, set
     member val Text = text with get, set
     member val Timestamp = timestamp with get, set
+    member val IsMine = isMine with get, set
     member this.TimeText = timestamp.ToString("HH:mm")
 
 type MainViewModel() as this =
     inherit ObservableObject()
 
-    let db = Rtdb(FirebaseConfig.url ())
+    let client = FirebaseClient(FirebaseConfig.apiKey(), FirebaseConfig.dbUrl())
+
+    // --- тема ---
+    let mutable themeName = "dark"
+
+    // --- навигация в боковой панели ---
+    let mutable sidebarMode = "dm" // dm | channels | account | settings
 
     // --- авторизация ---
     let mutable isLoggedIn = false
-    let mutable authUsername = ""
+    let mutable authNick = ""
+    let mutable authEmail = ""
     let mutable authPassword = ""
     let mutable authErrorText = ""
-    let mutable currentUserName = ""
+    let mutable currentNick = ""
+    let mutable currentEmail = ""
 
     // --- чаты ---
-    let contacts = ObservableCollection<string>()
-    let mutable selectedContact: string = null
-    let mutable activeChatTitle = "Выберите чат"
+    let contacts = ObservableCollection<UserProfile>()
+    let mutable selectedContact: UserProfile = Unchecked.defaultof<UserProfile>
     let mutable newMessageText = ""
     let messages = ObservableCollection<MessageItem>()
 
-    // --- звонки (пока макет) ---
+    // --- прочее ---
     let mutable statusText = "Готов к звонку"
     let mutable hasIncomingCall = false
-    let mutable isTabMode = true
-
     let mutable isBusy = false
     let mutable lastError = ""
 
-    // Опрос Firebase раз в 2 секунды — простой и предсказуемый realtime
-    // для десктопа (SSE добавим позже, если понадобится).
     let timer =
         new DispatcherTimer(
             TimeSpan.FromSeconds 2.0,
@@ -51,17 +57,83 @@ type MainViewModel() as this =
             EventHandler(fun _ _ -> this.RefreshMessagesAsync() |> ignore)
         )
 
-    do timer.Start()
+    do
+        timer.Start()
+        this.ApplyTheme themeName
 
-    // --- свойства авторизации ---
+    // --- тема ---
+
+    member private this.ApplyTheme(name: string) =
+        themeName <- name
+
+        let variant =
+            match name with
+            | "light" -> ThemeVariant.Light
+            | "system" -> ThemeVariant.Default
+            | _ -> ThemeVariant.Dark
+
+        match Application.Current with
+        | null -> ()
+        | app -> app.RequestedThemeVariant <- variant
+
+        this.OnPropertyChanged "IsDarkTheme"
+        this.OnPropertyChanged "IsLightTheme"
+        this.OnPropertyChanged "IsSystemTheme"
+
+    member this.IsDarkTheme = themeName = "dark"
+    member this.IsLightTheme = themeName = "light"
+    member this.IsSystemTheme = themeName = "system"
+
+    member this.SetThemeCommand =
+        RelayCommand<string>(fun name ->
+            this.ApplyTheme(if String.IsNullOrWhiteSpace name then "dark" else name))
+
+    // --- навигация ---
+
+    member private this.SetSidebarMode(mode: string) =
+        sidebarMode <- mode
+        this.OnPropertyChanged "IsChannelsView"
+        this.OnPropertyChanged "IsDmView"
+        this.OnPropertyChanged "IsAccountView"
+        this.OnPropertyChanged "IsSettingsView"
+        this.OnPropertyChanged "IsTabMode"
+        this.OnPropertyChanged "SidebarTitle"
+
+    member this.IsChannelsView = sidebarMode = "channels"
+    member this.IsDmView = sidebarMode = "dm"
+    member this.IsAccountView = sidebarMode = "account"
+    member this.IsSettingsView = sidebarMode = "settings"
+    member this.IsTabMode = sidebarMode = "channels" || sidebarMode = "dm"
+
+    member this.SidebarTitle =
+        match sidebarMode with
+        | "channels" -> "КАНАЛЫ"
+        | "dm" -> "ЛИЧНЫЕ СООБЩЕНИЯ"
+        | "account" -> "АККАУНТ"
+        | _ -> "НАСТРОЙКИ"
+
+    member this.ShowChannelsCommand = RelayCommand(fun () -> this.SetSidebarMode "channels")
+    member this.ShowDmsCommand = RelayCommand(fun () -> this.SetSidebarMode "dm")
+    member this.ShowAccountCommand = RelayCommand(fun () -> this.SetSidebarMode "account")
+    member this.ShowSettingsCommand = RelayCommand(fun () -> this.SetSidebarMode "settings")
+
+    member this.ToggleBottomPanelCommand =
+        RelayCommand(fun () ->
+            if this.IsTabMode then this.SetSidebarMode "account" else this.SetSidebarMode "dm")
+
+    // --- авторизация ---
 
     member this.IsLoggedIn
         with get () = isLoggedIn
         and set value = this.SetProperty(&isLoggedIn, value) |> ignore
 
-    member this.AuthUsername
-        with get () = authUsername
-        and set value = this.SetProperty(&authUsername, value) |> ignore
+    member this.AuthNick
+        with get () = authNick
+        and set value = this.SetProperty(&authNick, value) |> ignore
+
+    member this.AuthEmail
+        with get () = authEmail
+        and set value = this.SetProperty(&authEmail, value) |> ignore
 
     member this.AuthPassword
         with get () = authPassword
@@ -71,9 +143,18 @@ type MainViewModel() as this =
         with get () = authErrorText
         and set value = this.SetProperty(&authErrorText, value) |> ignore
 
-    member this.CurrentUserName
-        with get () = currentUserName
-        and set value = this.SetProperty(&currentUserName, value) |> ignore
+    member this.CurrentNick
+        with get () = currentNick
+        and set value =
+            this.SetProperty(&currentNick, value) |> ignore
+            this.OnPropertyChanged "CurrentInitial"
+
+    member this.CurrentEmail
+        with get () = currentEmail
+        and set value = this.SetProperty(&currentEmail, value) |> ignore
+
+    member this.CurrentInitial =
+        if String.IsNullOrWhiteSpace currentNick then "?" else currentNick.Substring(0, 1).ToUpperInvariant()
 
     member this.IsBusy
         with get () = isBusy
@@ -83,21 +164,32 @@ type MainViewModel() as this =
         with get () = lastError
         and set value = this.SetProperty(&lastError, value) |> ignore
 
-    // --- свойства чатов ---
+    // --- контакты ---
 
     member this.Contacts = contacts
 
     member this.SelectedContact
         with get () = selectedContact
         and set value =
-            if this.SetProperty(&selectedContact, value) then
-                this.ActiveChatTitle <- (if isNull value then "Выберите чат" else value)
+            if not (obj.ReferenceEquals(selectedContact, value)) then
+                selectedContact <- value
+                this.OnPropertyChanged "SelectedContact"
+                this.OnPropertyChanged "HasContact"
+                this.OnPropertyChanged "ActiveChatTitle"
+                this.OnPropertyChanged "ActiveChatSubtitle"
                 messages.Clear()
                 this.RefreshMessagesAsync() |> ignore
 
-    member this.ActiveChatTitle
-        with get () = activeChatTitle
-        and set value = this.SetProperty(&activeChatTitle, value) |> ignore
+    member this.HasContact = not (obj.ReferenceEquals(selectedContact, null))
+
+    member this.ActiveChatTitle =
+        if obj.ReferenceEquals(selectedContact, null) then "Нет диалога" else selectedContact.Nick
+
+    member this.ActiveChatSubtitle =
+        if obj.ReferenceEquals(selectedContact, null) then
+            "Выберите собеседника слева"
+        else
+            "Личные сообщения · шифрование AES-256"
 
     member this.NewMessageText
         with get () = newMessageText
@@ -105,7 +197,7 @@ type MainViewModel() as this =
 
     member this.Messages = messages
 
-    // --- звонки ---
+    // --- звонки (макет) ---
 
     member this.StatusText
         with get () = statusText
@@ -115,45 +207,45 @@ type MainViewModel() as this =
         with get () = hasIncomingCall
         and set value = this.SetProperty(&hasIncomingCall, value) |> ignore
 
-    member this.IsTabMode
-        with get () = isTabMode
-        and set value = this.SetProperty(&isTabMode, value) |> ignore
-
-    // --- сеть ---
-
-    member private this.CurrentChatId =
-        if String.IsNullOrWhiteSpace currentUserName || String.IsNullOrWhiteSpace selectedContact then
-            ""
-        else
-            Chats.chatId currentUserName selectedContact
+    // --- работа с сетью ---
 
     member this.RefreshMessagesAsync() : Task = task {
-        let chat = this.CurrentChatId
+        let peer = selectedContact
 
-        if this.IsLoggedIn && chat <> "" then
+        if this.IsLoggedIn && not (obj.ReferenceEquals(peer, null)) then
             try
-                let! history = Chats.historyAsync db chat
+                let! history = client.HistoryAsync peer.Uid
 
-                // Перерисовываем только при изменении количества, чтобы
-                // не сбрасывать прокрутку на каждом тике таймера.
                 if history.Length <> messages.Count then
                     messages.Clear()
                     for message in history do
-                        messages.Add(MessageItem(message.From, message.Text, message.Timestamp))
+                        messages.Add(
+                            MessageItem(message.FromNick, message.Text, message.Timestamp, message.FromUid = client.Uid)
+                        )
             with ex ->
-                this.LastError <- "Не удалось загрузить сообщения: " + ex.Message
+                this.LastError <- "Сообщения: " + ex.Message
     }
 
     member private this.LoadContactsAsync() : Task = task {
         try
-            let! names = Users.listAsync db
+            let! users = client.UsersAsync()
+            let selectedUid = if obj.ReferenceEquals(selectedContact, null) then "" else selectedContact.Uid
+
             contacts.Clear()
-            for name in names do
-                // себя в списке собеседников не показываем
-                if name <> Users.normalizeName currentUserName then
-                    contacts.Add name
+            for user in users do
+                if user.Uid <> client.Uid then
+                    contacts.Add user
+
+            let restored =
+                if selectedUid = "" then None
+                else contacts |> Seq.tryFind (fun user -> user.Uid = selectedUid)
+
+            match restored with
+            | Some user -> this.SelectedContact <- user
+            | None when contacts.Count > 0 -> this.SelectedContact <- contacts.[0]
+            | None -> this.SelectedContact <- Unchecked.defaultof<UserProfile>
         with ex ->
-            this.LastError <- "Не удалось получить список пользователей: " + ex.Message
+            this.LastError <- "Пользователи: " + ex.Message
     }
 
     member private this.AuthenticateAsync(register: bool) : Task = task {
@@ -165,25 +257,21 @@ type MainViewModel() as this =
             try
                 let! result =
                     if register then
-                        Users.registerAsync db this.AuthUsername this.AuthPassword
+                        client.SignUpAsync(this.AuthNick, this.AuthEmail, this.AuthPassword)
                     else
-                        Users.loginAsync db this.AuthUsername this.AuthPassword
+                        client.SignInAsync(this.AuthEmail, this.AuthPassword)
 
                 match result with
-                | Ok profile ->
-                    this.CurrentUserName <- profile.Name
+                | Ok session ->
+                    this.CurrentNick <- session.Nick
+                    this.CurrentEmail <- session.Email
                     this.IsLoggedIn <- true
                     this.AuthPassword <- ""
+                    this.SetSidebarMode "dm"
                     do! this.LoadContactsAsync()
-
-                    // Автоматически открываем первый диалог с другим ником.
-                    let firstOther = contacts |> Seq.tryFind (fun n -> n <> profile.Name)
-                    match firstOther with
-                    | Some name -> this.SelectedContact <- name
-                    | None -> this.SelectedContact <- null
                 | Result.Error message -> this.AuthErrorText <- message
             with ex ->
-                this.AuthErrorText <- "Нет связи с Firebase: " + ex.Message
+                this.AuthErrorText <- "Ошибка: " + ex.Message
 
             this.IsBusy <- false
     }
@@ -196,31 +284,34 @@ type MainViewModel() as this =
 
     member this.LogoutCommand =
         RelayCommand(fun () ->
+            client.SignOut()
             this.IsLoggedIn <- false
-            this.CurrentUserName <- ""
-            this.SelectedContact <- null
-            this.ActiveChatTitle <- "Выберите чат"
+            this.CurrentNick <- ""
+            this.CurrentEmail <- ""
+            this.SelectedContact <- Unchecked.defaultof<UserProfile>
             this.Messages.Clear()
             this.Contacts.Clear()
-            this.StatusText <- "Готов к звонку"
+            this.AuthErrorText <- ""
+            this.LastError <- ""
+            this.SetSidebarMode "dm"
         )
 
     member this.SendMessageCommand =
         AsyncRelayCommand(
             Func<Task>(fun () ->
                 task {
-                    let chat = this.CurrentChatId
+                    let peer = selectedContact
                     let text = this.NewMessageText
 
-                    if chat <> "" && not (String.IsNullOrWhiteSpace text) then
+                    if not (obj.ReferenceEquals(peer, null)) && not (String.IsNullOrWhiteSpace text) then
                         try
-                            match! Chats.sendAsync db chat this.CurrentUserName text with
+                            match! client.SendAsync(peer.Uid, text) with
                             | Ok () ->
                                 this.NewMessageText <- ""
                                 do! this.RefreshMessagesAsync()
                             | Result.Error message -> this.LastError <- message
                         with ex ->
-                            this.LastError <- "Не удалось отправить: " + ex.Message
+                            this.LastError <- "Отправка: " + ex.Message
                 })
         )
 
@@ -233,12 +324,7 @@ type MainViewModel() as this =
                 })
         )
 
-    // --- заглушки звонков, пока не подключён WebRTC ---
-
-    member this.ToggleBottomPanelCommand =
-        RelayCommand(fun () -> this.IsTabMode <- not this.IsTabMode)
-
-    member this.SelectTabCommand = RelayCommand<string>(fun _ -> ())
+    // --- заглушки звонков ---
 
     member this.StartCallCommand =
         RelayCommand(fun () ->

@@ -1,269 +1,531 @@
 namespace uqoz.Firebase
 
 open System
-open System.Globalization
+open System.Collections.Generic
+open System.Net
 open System.Net.Http
 open System.Security.Cryptography
 open System.Text
 open System.Text.Json
 open System.Text.Json.Nodes
 open System.Threading.Tasks
-open BCrypt.Net
 open uqoz.Crypto
 
-/// Настройки подключения. URL можно переопределить переменной окружения
-/// UQOZ_FIREBASE_URL (удобно для тестового проекта).
+/// Настройки подключения.
+/// URL и Web API key можно задать переменными окружения,
+/// чтобы не хранить их в исходниках.
 module FirebaseConfig =
 
     let defaultUrl = "https://uqoz-cazu-default-rtdb.europe-west1.firebasedatabase.app"
 
-    let url () =
+    /// Web API key: Firebase Console → Project settings → General → Web API Key.
+    /// Пока не вставлен — приложение честно скажет об этом при входе.
+    let apiKeyPlaceholder = "PASTE_FIREBASE_WEB_API_KEY"
+
+    let dbUrl () =
         match Environment.GetEnvironmentVariable "UQOZ_FIREBASE_URL" with
         | null | "" -> defaultUrl
-        | value -> value
+        | value -> value.Trim().TrimEnd('/')
 
-// ---------------------------------------------------------------------------
-// Низкоуровневый REST-клиент Realtime Database
-// ---------------------------------------------------------------------------
+    let apiKey () =
+        // 1) переменная окружения
+        match Environment.GetEnvironmentVariable "UQOZ_FIREBASE_API_KEY" with
+        | value when not (String.IsNullOrWhiteSpace value) -> value.Trim()
+        | _ ->
+            // 2) локальный файл рядом с exe (добавлен в .gitignore)
+            try
+                let path = System.IO.Path.Combine(AppContext.BaseDirectory, "firebase.key")
+                if System.IO.File.Exists path then
+                    System.IO.File.ReadAllText(path).Trim()
+                else
+                    apiKeyPlaceholder
+            with _ -> apiKeyPlaceholder
 
-type Rtdb(baseUrl: string) =
+    let isConfigured () = apiKey () <> apiKeyPlaceholder
 
-    let http = new HttpClient(Timeout = TimeSpan.FromSeconds 20.0)
-    let root = baseUrl.Trim().TrimEnd('/')
 
-    member private _.Url(path: string, query: string) =
-        let clean = path.Trim('/')
-        let q = if String.IsNullOrEmpty query then "" else "?" + query
-        sprintf "%s/%s.json%s" root clean q
-
-    member private _.Fail(op: string, path: string, status: int, body: string) =
-        raise (Exception(sprintf "Firebase %s /%s: HTTP %d — %s" op path status body))
-
-    member this.GetAsync(path: string) : Task<string> = task {
-        let! response = http.GetAsync(this.Url(path, ""))
-        let! body = response.Content.ReadAsStringAsync()
-        if not response.IsSuccessStatusCode then
-            this.Fail("GET", path, int response.StatusCode, body)
-        return body
-    }
-
-    member this.GetShallowAsync(path: string) : Task<string> = task {
-        let! response = http.GetAsync(this.Url(path, "shallow=true"))
-        let! body = response.Content.ReadAsStringAsync()
-        if not response.IsSuccessStatusCode then
-            this.Fail("GET shallow", path, int response.StatusCode, body)
-        return body
-    }
-
-    member this.PutAsync(path: string, json: string) : Task<unit> = task {
-        use content = new StringContent(json, Encoding.UTF8, "application/json")
-        let! response = http.PutAsync(this.Url(path, ""), content)
-        let! body = response.Content.ReadAsStringAsync()
-        if not response.IsSuccessStatusCode then
-            this.Fail("PUT", path, int response.StatusCode, body)
-        return ()
-    }
-
-    /// POST создаёт узел с уникальным ключом (аналог push()).
-    /// Возвращает этот ключ.
-    member this.PostAsync(path: string, json: string) : Task<string> = task {
-        use content = new StringContent(json, Encoding.UTF8, "application/json")
-        let! response = http.PostAsync(this.Url(path, ""), content)
-        let! body = response.Content.ReadAsStringAsync()
-        if not response.IsSuccessStatusCode then
-            this.Fail("POST", path, int response.StatusCode, body)
-        use doc = JsonDocument.Parse(body)
-        match doc.RootElement.TryGetProperty "name" with
-        | true, name -> return name.GetString()
-        | _ -> return ""
-    }
-
-    member this.DeleteAsync(path: string) : Task<unit> = task {
-        let! response = http.DeleteAsync(this.Url(path, ""))
-        if not response.IsSuccessStatusCode then
-            let! body = response.Content.ReadAsStringAsync()
-            this.Fail("DELETE", path, int response.StatusCode, body)
-        return ()
-    }
-
-// ---------------------------------------------------------------------------
-// Пользователи (вход по нику и паролю)
-// ---------------------------------------------------------------------------
-
-type UserProfile = {
-    Name: string
-    CreatedAt: DateTime
-    Avatar: string
+type Session = {
+    Uid: string
+    Email: string
+    Nick: string
+    IdToken: string
+    RefreshToken: string
+    ExpiresAt: DateTime
 }
 
-module Users =
-
-    let private jsonString (node: JsonNode) =
-        if isNull node then "" else node.GetValue<string>()
-
-    let normalizeName (name: string) =
-        (if isNull name then "" else name).Trim().TrimStart('@').ToLowerInvariant()
-
-    let isValidName (name: string) =
-        name.Length >= 3
-        && name.Length <= 20
-        && name |> Seq.forall (fun c -> Char.IsLetterOrDigit c || c = '_')
-
-    let private userJson (name: string) (passwordHash: string) =
-        let node = JsonObject()
-        node["name"] <- JsonValue.Create(name)
-        node["hash"] <- JsonValue.Create(passwordHash)
-        node["createdAt"] <- JsonValue.Create(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds())
-        node["avatar"] <- JsonValue.Create("")
-        node.ToJsonString()
-
-    let registerAsync (db: Rtdb) (name: string) (password: string) : Task<Result<UserProfile, string>> = task {
-        let clean = normalizeName name
-
-        if not (isValidName clean) then
-            return Result.Error "Ник: 3–20 символов, только буквы, цифры и _"
-        elif String.IsNullOrWhiteSpace password || password.Length < 4 then
-            return Result.Error "Пароль должен быть не короче 4 символов"
-        else
-            let! existing = db.GetAsync("users/" + clean)
-
-            if not (String.IsNullOrWhiteSpace existing) && existing.Trim() <> "null" then
-                return Result.Error "Этот ник уже занят"
-            else
-                let hash = BCrypt.HashPassword password
-                do! db.PutAsync("users/" + clean, userJson clean hash)
-                return Ok { Name = clean; CreatedAt = DateTime.UtcNow; Avatar = "" }
-    }
-
-    let loginAsync (db: Rtdb) (name: string) (password: string) : Task<Result<UserProfile, string>> = task {
-        let clean = normalizeName name
-
-        if String.IsNullOrWhiteSpace clean then
-            return Result.Error "Введите ник"
-        elif String.IsNullOrWhiteSpace password then
-            return Result.Error "Введите пароль"
-        else
-            let! raw = db.GetAsync("users/" + clean)
-
-            if String.IsNullOrWhiteSpace raw || raw.Trim() = "null" then
-                return Result.Error "Пользователь не найден"
-            else
-                let node = JsonNode.Parse raw
-                let hash = jsonString node["hash"]
-
-                if String.IsNullOrWhiteSpace hash || not (BCrypt.Verify(password, hash)) then
-                    return Result.Error "Неверный пароль"
-                else
-                    let createdAt =
-                        try
-                            DateTimeOffset
-                                .FromUnixTimeMilliseconds(node["createdAt"].GetValue<int64>())
-                                .UtcDateTime
-                        with _ -> DateTime.UtcNow
-
-                    return Ok { Name = clean; CreatedAt = createdAt; Avatar = jsonString node["avatar"] }
-    }
-
-    /// Список всех зарегистрированных ников (через shallow=true).
-    let listAsync (db: Rtdb) : Task<string list> = task {
-        let! raw = db.GetShallowAsync "users"
-
-        if String.IsNullOrWhiteSpace raw || raw.Trim() = "null" then
-            return []
-        else
-            let node = JsonNode.Parse raw
-
-            match node with
-            | :? JsonObject as obj ->
-                return
-                    obj
-                    |> Seq.map (fun kv -> kv.Key)
-                    |> Seq.sort
-                    |> Seq.toList
-            | _ -> return []
-    }
-
-// ---------------------------------------------------------------------------
-// Чаты и сообщения
-// ---------------------------------------------------------------------------
+type UserProfile = {
+    Uid: string
+    Nick: string
+    Email: string
+    Avatar: string
+} with
+    member this.Initial =
+        if String.IsNullOrWhiteSpace this.Nick then "?" else this.Nick.Substring(0, 1).ToUpperInvariant()
 
 type ChatMessage = {
     Id: string
-    From: string
+    FromUid: string
+    FromNick: string
     Text: string
     Timestamp: DateTime
 }
 
-module Chats =
+// ---------------------------------------------------------------------------
+// JSON helpers
+// ---------------------------------------------------------------------------
 
-    let private appSecret = "uqoz-chat-v1-7f3a9c2e"
+module private Json =
 
-    /// Идентификатор диалога не зависит от того, кто его открыл.
-    let chatId (a: string) (b: string) =
-        let x = Users.normalizeName a
-        let y = Users.normalizeName b
-        if String.CompareOrdinal(x, y) <= 0 then x + "__" + y else y + "__" + x
+    let str (element: JsonElement) (name: string) =
+        match element.TryGetProperty name with
+        | true, value when value.ValueKind = JsonValueKind.String -> value.GetString()
+        | _ -> ""
 
-    /// Ключ шифрования, одинаковый у обоих участников конкретного чата.
-    let chatKey (id: string) =
-        SHA256.HashData(Encoding.UTF8.GetBytes(id + "|" + appSecret))
+    let number (element: JsonElement) (name: string) =
+        match element.TryGetProperty name with
+        | true, value when value.ValueKind = JsonValueKind.Number ->
+            match value.TryGetInt64() with
+            | true, n -> n
+            | _ -> 0L
+        | _ -> 0L
 
-    let private decode (node: JsonNode) =
-        if isNull node then "" else node.GetValue<string>()
+    let escape (value: string) = JsonSerializer.Serialize value
 
-    let sendAsync (db: Rtdb) (id: string) (sender: string) (text: string) : Task<Result<unit, string>> = task {
-        if String.IsNullOrWhiteSpace text then
-            return Result.Error "Пустое сообщение"
+    /// Бросает исключение и подходит под любой ожидаемый тип.
+    let fail (message: string) : 'a = raise (Exception message)
+
+    /// Часть адреса до @ — запасной ник, если профиль не найден.
+    let emailNick (email: string) =
+        let at = email.IndexOf '@'
+        if at > 0 then email.Substring(0, at).ToLowerInvariant() else "user"
+
+    let errorCode (text: string) =
+        try
+            use doc = JsonDocument.Parse text
+            let mutable error = Unchecked.defaultof<JsonElement>
+
+            if doc.RootElement.TryGetProperty("error", &error)
+               && error.TryGetProperty("message", &error) then
+                error.GetString()
+            else
+                ""
+        with _ -> ""
+
+    let translate (code: string) =
+        match code with
+        | "EMAIL_EXISTS" -> "Эта почта уже зарегистрирована"
+        | "EMAIL_NOT_FOUND" -> "Аккаунт с такой почтой не найден"
+        | "INVALID_PASSWORD" -> "Неверный пароль"
+        | "INVALID_LOGIN_CREDENTIALS" -> "Неверная почта или пароль"
+        | "INVALID_EMAIL" -> "Некорректная почта"
+        | "MISSING_EMAIL" -> "Введите почту"
+        | "MISSING_PASSWORD" -> "Введите пароль"
+        | "WEAK_PASSWORD" -> "Пароль слишком простой: минимум 6 символов"
+        | "PASSWORD_DOES_NOT_MEET_REQUIREMENTS" -> "Пароль не соответствует требованиям Firebase"
+        | "TOO_MANY_ATTEMPTS_TRY_LATER" -> "Слишком много попыток, попробуйте позже"
+        | "USER_DISABLED" -> "Аккаунт отключён"
+        | "CONFIGURATION_NOT_FOUND"
+        | "OPERATION_NOT_ALLOWED" ->
+            "В Firebase не включён вход Email/Password. Authentication → Sign-in method → Email/Password → Enable"
+        | "API_KEY_INVALID" -> "Неверный Firebase Web API key"
+        | "PERMISSION_DENIED" -> "Нет доступа: проверьте правила Realtime Database"
+        | "" -> "Неизвестная ошибка Firebase"
+        | other -> other
+
+// ---------------------------------------------------------------------------
+// Firebase client: Auth (Identity Toolkit) + Realtime Database (REST)
+// ---------------------------------------------------------------------------
+
+type FirebaseClient(apiKey: string, dbUrl: string) =
+
+    let http = new HttpClient(Timeout = TimeSpan.FromSeconds 25.0)
+    let root = dbUrl.Trim().TrimEnd('/')
+    let mutable session: Session option = None
+
+    // --- HTTP helpers -------------------------------------------------------
+
+    member private _.SendRawAsync(url: string, payload: string, method: HttpMethod) : Task<int * string> = task {
+        use request = new HttpRequestMessage(method, url)
+
+        if not (String.IsNullOrEmpty payload) then
+            request.Content <- new StringContent(payload, Encoding.UTF8, "application/json")
+
+        let! response = http.SendAsync request
+        let! body = response.Content.ReadAsStringAsync()
+        return int response.StatusCode, body
+    }
+
+    member private this.TokenEndpoint(host: string, path: string) =
+        sprintf "https://%s/v1/%s?key=%s" host path (Uri.EscapeDataString apiKey)
+
+    // --- session ------------------------------------------------------------
+
+    member this.Session = session
+    member this.IsSignedIn = session.IsSome
+    member this.Uid = session |> Option.map (fun s -> s.Uid) |> Option.defaultValue ""
+    member this.Nick = session |> Option.map (fun s -> s.Nick) |> Option.defaultValue ""
+
+    member this.SignOut() = session <- None
+
+    member private this.ApplyAuthResponse(email: string) : JsonDocument -> Session =
+        fun doc ->
+            let rootEl = doc.RootElement
+            let expiresIn = Json.number rootEl "expiresIn"
+
+            {
+                Uid = Json.str rootEl "localId"
+                Email = (let e = Json.str rootEl "email" in if e = "" then email else e)
+                Nick = ""
+                IdToken = Json.str rootEl "idToken"
+                RefreshToken = Json.str rootEl "refreshToken"
+                ExpiresAt = DateTime.UtcNow.AddSeconds(if expiresIn > 0L then float expiresIn else 3600.0)
+            }
+
+    member private this.RefreshTokenAsync(current: Session) : Task<Session> = task {
+        if String.IsNullOrEmpty apiKey || apiKey = FirebaseConfig.apiKeyPlaceholder then
+            failwith "Не задан Firebase Web API key"
+
+        let url =
+            sprintf
+                "https://securetoken.googleapis.com/v1/token?key=%s"
+                (Uri.EscapeDataString apiKey)
+
+        use content =
+            new FormUrlEncodedContent(
+                [ KeyValuePair("grant_type", "refresh_token")
+                  KeyValuePair("refresh_token", current.RefreshToken) ]
+            )
+
+        let! response = http.PostAsync(url, content)
+        let! text = response.Content.ReadAsStringAsync()
+
+        if not response.IsSuccessStatusCode then
+            session <- None
+            failwith "Сессия истекла — войдите заново"
+
+        use doc = JsonDocument.Parse text
+        let rootEl = doc.RootElement
+        let refresh = Json.str rootEl "refresh_token"
+        let expiresIn = Json.number rootEl "expires_in"
+
+        let updated = {
+            current with
+                IdToken = Json.str rootEl "id_token"
+                RefreshToken = (if refresh = "" then current.RefreshToken else refresh)
+                ExpiresAt = DateTime.UtcNow.AddSeconds(if expiresIn > 0L then float expiresIn else 3600.0)
+        }
+
+        session <- Some updated
+        return updated
+    }
+
+    member private this.EnsureTokenAsync() : Task<string> = task {
+        match session with
+        | None -> return Json.fail "Вы не вошли в аккаунт"
+        | Some current when current.ExpiresAt > DateTime.UtcNow.AddMinutes 2.0 ->
+            return current.IdToken
+        | Some current ->
+            let! updated = this.RefreshTokenAsync current
+            return updated.IdToken
+    }
+
+    /// Запрос к Realtime Database с токеном; при 401 токен обновляется
+    /// и запрос повторяется один раз.
+    member private this.DbAsync(path: string, method: HttpMethod, payload: string option) : Task<string> = task {
+        let build (token: string) =
+            let url =
+                sprintf
+                    "%s/%s.json?auth=%s"
+                    root
+                    (path.Trim('/'))
+                    (Uri.EscapeDataString token)
+
+            let request = new HttpRequestMessage(method, url)
+            match payload with
+            | Some json -> request.Content <- new StringContent(json, Encoding.UTF8, "application/json")
+            | None -> ()
+            request
+
+        let! token = this.EnsureTokenAsync()
+        let request = build token
+        let! response = http.SendAsync request
+        let! body = response.Content.ReadAsStringAsync()
+        request.Dispose()
+
+        if response.StatusCode = HttpStatusCode.Unauthorized then
+            match session with
+            | None -> return Json.fail "Вы не вошли в аккаунт"
+            | Some current ->
+                let! updated = this.RefreshTokenAsync current
+                let retry = build updated.IdToken
+                let! retryResponse = http.SendAsync retry
+                let! retryBody = retryResponse.Content.ReadAsStringAsync()
+                retry.Dispose()
+
+                if not retryResponse.IsSuccessStatusCode then
+                    return Json.fail (sprintf "Firebase: HTTP %d — %s" (int retryResponse.StatusCode) retryBody)
+                else
+                    return retryBody
+        elif not response.IsSuccessStatusCode then
+            return Json.fail (sprintf "Firebase: HTTP %d — %s" (int response.StatusCode) body)
         else
-            let cipher, iv = CryptoService.Encrypt text (chatKey id)
+            return body
+    }
+    // --- Auth ---------------------------------------------------------------
+
+    member private this.AuthRequestAsync(path: string, payload: string) : Task<Result<Session, string>> = task {
+        if String.IsNullOrWhiteSpace apiKey || apiKey = FirebaseConfig.apiKeyPlaceholder then
+            return Result.Error "Не задан Firebase Web API key (UQOZ_FIREBASE_API_KEY)"
+        else
+            let url = this.TokenEndpoint("identitytoolkit.googleapis.com", path)
+            let! status, text = this.SendRawAsync(url, payload, HttpMethod.Post)
+
+            if status <> 200 then
+                return Result.Error(Json.translate (Json.errorCode text))
+            else
+                use doc = JsonDocument.Parse text
+                return Ok(this.ApplyAuthResponse "" doc)
+    }
+
+    member private this.DeleteAccountAsync(idToken: string) : Task = task {
+        let url = this.TokenEndpoint("identitytoolkit.googleapis.com", "accounts:delete")
+        let payload = sprintf """{"idToken":%s}""" (Json.escape idToken)
+        let! _ = this.SendRawAsync(url, payload, HttpMethod.Post)
+        return ()
+    }
+
+    member private this.LoadProfileAsync(uid: string) : Task<Option<JsonElement>> = task {
+        let! raw = this.DbAsync("users/" + uid, HttpMethod.Get, None)
+
+        if String.IsNullOrWhiteSpace raw || raw.Trim() = "null" then
+            return None
+        else
+            use doc = JsonDocument.Parse raw
+            return Some(doc.RootElement.Clone())
+    }
+
+    member this.SignUpAsync(nick: string, email: string, password: string) : Task<Result<Session, string>> = task {
+        let cleanNick = nick.Trim().TrimStart('@').ToLowerInvariant()
+        let cleanEmail = email.Trim()
+
+        if cleanNick.Length < 3 || cleanNick.Length > 20 then
+            return Result.Error "Ник: от 3 до 20 символов"
+        elif not (cleanNick |> Seq.forall (fun c -> Char.IsLetterOrDigit c || c = '_')) then
+            return Result.Error "В нике допустимы буквы, цифры и _"
+        elif String.IsNullOrWhiteSpace cleanEmail then
+            return Result.Error "Введите почту"
+        elif String.IsNullOrWhiteSpace password || password.Length < 6 then
+            return Result.Error "Пароль должен быть не короче 6 символов"
+        else
+            let signUpPayload =
+                sprintf
+                    """{"email":%s,"password":%s,"returnSecureToken":true}"""
+                    (Json.escape cleanEmail)
+                    (Json.escape password)
+
+            let! authResult =
+                this.AuthRequestAsync("accounts:signUp", signUpPayload)
+
+            match authResult with
+            | Result.Error message -> return Result.Error message
+            | Ok auth ->
+                let withNick = { auth with Nick = cleanNick }
+                session <- Some withNick
+
+                try
+                    // Ник должен быть свободен. Сначала проверяем, потом пишем;
+                    // правила базы дополнительно запрещают перезапись (data.exists()).
+                    let! existingNick = this.DbAsync("nicks/" + cleanNick, HttpMethod.Get, None)
+
+                    if not (String.IsNullOrWhiteSpace existingNick)
+                       && existingNick.Trim() <> "null" then
+                        do! this.DeleteAccountAsync withNick.IdToken
+                        session <- None
+                        return Result.Error "Этот ник уже занят"
+                    else
+                        let nickPayload = Json.escape withNick.Uid
+                        let! _ = this.DbAsync("nicks/" + cleanNick, HttpMethod.Put, Some nickPayload)
+
+                        let profile = JsonObject()
+                        profile["nick"] <- JsonValue.Create cleanNick
+                        profile["email"] <- JsonValue.Create cleanEmail
+                        profile["avatar"] <- JsonValue.Create ""
+                        profile["createdAt"] <- JsonValue.Create(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds())
+
+                        let! _ =
+                            this.DbAsync(
+                                "users/" + withNick.Uid,
+                                HttpMethod.Put,
+                                Some(profile.ToJsonString())
+                            )
+
+                        return Ok withNick
+                with _ ->
+                    // Ник занят или правила не пустили — откатываем аккаунт.
+                    do! this.DeleteAccountAsync withNick.IdToken
+                    session <- None
+                    return Result.Error "Этот ник уже занят"
+    }
+
+    member this.SignInAsync(email: string, password: string) : Task<Result<Session, string>> = task {
+        if String.IsNullOrWhiteSpace email || String.IsNullOrWhiteSpace password then
+            return Result.Error "Введите почту и пароль"
+        else
+            let payload =
+                sprintf
+                    """{"email":%s,"password":%s,"returnSecureToken":true}"""
+                    (Json.escape (email.Trim()))
+                    (Json.escape password)
+
+            let! authResult =
+                this.AuthRequestAsync("accounts:signInWithPassword", payload)
+
+            match authResult with
+            | Result.Error message -> return Result.Error message
+            | Ok auth ->
+                session <- Some auth
+
+                let! profile = this.LoadProfileAsync auth.Uid
+
+                match profile with
+                | Some node ->
+                    let nick = Json.str node "nick"
+                    let named = { auth with Nick = (if nick = "" then Json.emailNick auth.Email else nick) }
+                    session <- Some named
+                    return Ok named
+                | None ->
+                    // Аккаунт Firebase есть, а профиля нет — создаём минимальный.
+                    let fallbackNick = Json.emailNick auth.Email
+                    let profileJson = JsonObject()
+                    profileJson["nick"] <- JsonValue.Create fallbackNick
+                    profileJson["email"] <- JsonValue.Create auth.Email
+                    profileJson["avatar"] <- JsonValue.Create ""
+                    profileJson["createdAt"] <- JsonValue.Create(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds())
+
+                    let! _ =
+                        this.DbAsync(
+                            "users/" + auth.Uid,
+                            HttpMethod.Put,
+                            Some(profileJson.ToJsonString())
+                        )
+
+                    let named = { auth with Nick = fallbackNick }
+                    session <- Some named
+                    return Ok named
+    }
+
+    // --- users --------------------------------------------------------------
+
+    member this.UsersAsync() : Task<UserProfile list> = task {
+        let! raw = this.DbAsync("users", HttpMethod.Get, None)
+
+        if String.IsNullOrWhiteSpace raw || raw.Trim() = "null" then
+            return []
+        else
+            use doc = JsonDocument.Parse raw
+
+            match doc.RootElement.ValueKind with
+            | JsonValueKind.Object ->
+                return
+                    doc.RootElement.EnumerateObject()
+                    |> Seq.choose (fun property ->
+                        let node = property.Value
+                        if node.ValueKind <> JsonValueKind.Object then
+                            None
+                        else
+                            let nick = Json.str node "nick"
+                            Some {
+                                Uid = property.Name
+                                Nick = (if nick = "" then property.Name else nick)
+                                Email = Json.str node "email"
+                                Avatar = Json.str node "avatar"
+                            })
+                    |> Seq.sortBy (fun u -> u.Nick)
+                    |> Seq.toList
+            | _ -> return []
+    }
+
+    // --- chats --------------------------------------------------------------
+
+    member private _.ChatKey(id: string) =
+        SHA256.HashData(Encoding.UTF8.GetBytes(id + "|uqoz-chat-v1-7f3a9c2e"))
+
+    member this.ChatIdWith(peerUid: string) =
+        let me = this.Uid
+        if String.CompareOrdinal(me, peerUid) <= 0 then me + "__" + peerUid else peerUid + "__" + me
+
+    member this.SendAsync(peerUid: string, text: string) : Task<Result<unit, string>> = task {
+        match session with
+        | None -> return Result.Error "Вы не вошли в аккаунт"
+        | Some current when String.IsNullOrWhiteSpace text ->
+            return Result.Error "Пустое сообщение"
+        | Some current ->
+            let chat = this.ChatIdWith peerUid
+            let cipher, iv = CryptoService.Encrypt text (this.ChatKey chat)
 
             let payload = JsonObject()
-            payload["from"] <- JsonValue.Create(Users.normalizeName sender)
-            payload["cipher"] <- JsonValue.Create(cipher)
+            payload["from"] <- JsonValue.Create current.Uid
+            payload["fromNick"] <- JsonValue.Create current.Nick
+            payload["cipher"] <- JsonValue.Create cipher
             payload["iv"] <- JsonValue.Create(Convert.ToBase64String iv)
             payload["ts"] <- JsonValue.Create(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds())
 
-            let! _ = db.PostAsync("messages/" + id, payload.ToJsonString())
-            return Ok ()
+            try
+                let! _ =
+                    this.DbAsync(
+                        "messages/" + chat,
+                        HttpMethod.Post,
+                        Some(payload.ToJsonString())
+                    )
+
+                return Ok()
+            with ex ->
+                return Result.Error ex.Message
     }
 
-    let private parseMessages (id: string) (raw: string) =
+    member this.HistoryAsync(peerUid: string) : Task<ChatMessage list> = task {
+        let chat = this.ChatIdWith peerUid
+        let! raw = this.DbAsync("messages/" + chat, HttpMethod.Get, None)
+
         if String.IsNullOrWhiteSpace raw || raw.Trim() = "null" then
-            []
+            return []
         else
-            match JsonNode.Parse raw with
-            | :? JsonObject as obj ->
-                obj
-                |> Seq.choose (fun kv ->
-                    try
-                        let node = kv.Value
-                        let ts =
+            use doc = JsonDocument.Parse raw
+
+            match doc.RootElement.ValueKind with
+            | JsonValueKind.Object ->
+                let key = this.ChatKey chat
+
+                return
+                    doc.RootElement.EnumerateObject()
+                    |> Seq.choose (fun property ->
+                        let node = property.Value
+                        if node.ValueKind <> JsonValueKind.Object then
+                            None
+                        else
                             try
-                                DateTimeOffset
-                                    .FromUnixTimeMilliseconds(node["ts"].GetValue<int64>())
-                                    .LocalDateTime
-                            with _ -> DateTime.MinValue
+                                let ts =
+                                    DateTimeOffset
+                                        .FromUnixTimeMilliseconds(Json.number node "ts")
+                                        .LocalDateTime
 
-                        let cipher = decode node["cipher"]
-                        let iv = decode node["iv"]
+                                let cipher = Json.str node "cipher"
+                                let iv = Json.str node "iv"
 
-                        let text =
-                            try
-                                CryptoService.Decrypt cipher (chatKey id) (Convert.FromBase64String iv)
-                            with _ -> "[не удалось расшифровать]"
+                                let text =
+                                    try
+                                        CryptoService.Decrypt cipher key (Convert.FromBase64String iv)
+                                    with _ -> "[не удалось расшифровать]"
 
-                        Some {
-                            Id = kv.Key
-                            From = decode node["from"]
-                            Text = text
-                            Timestamp = ts
-                        }
-                    with _ -> None)
-                |> Seq.sortBy (fun m -> m.Timestamp)
-                |> Seq.toList
-            | _ -> []
-
-    let historyAsync (db: Rtdb) (id: string) : Task<ChatMessage list> = task {
-        let! raw = db.GetAsync("messages/" + id)
-        return parseMessages id raw
+                                Some {
+                                    Id = property.Name
+                                    FromUid = Json.str node "from"
+                                    FromNick = Json.str node "fromNick"
+                                    Text = text
+                                    Timestamp = ts
+                                }
+                            with _ -> None)
+                    |> Seq.sortBy (fun m -> m.Timestamp)
+                    |> Seq.toList
+            | _ -> return []
     }

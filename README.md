@@ -1,17 +1,19 @@
 # uqoz
 
-Мессенджер на F# + Avalonia, данные — в Firebase Realtime Database.
+Мессенджер на F# + Avalonia. Аккаунты и сообщения — Firebase (Authentication + Realtime Database).
 
-## Что уже работает
+## Что работает
 
-- регистрация и вход по нику и паролю (BCrypt);
-- список пользователей из `users/` (через `shallow=true`);
-- личные диалоги: `messages/{chatId}/…`;
-- сообщения шифруются AES-256 перед отправкой, в базе лежит только шифротекст;
-- автоматическое обновление переписки (опрос раз в 2 секунды);
-- тёмный интерфейс в стиле Discord.
+- регистрация: ник + почта + пароль (Firebase Auth, Email/Password);
+- вход по почте и паролю, токен автоматически обновляется;
+- уникальность ника (проверка + правило `!data.exists()` в базе);
+- список пользователей и личные диалоги;
+- сообщения шифруются AES-256 перед отправкой, в базе только шифротекст;
+- автообновление переписки раз в 2 секунды;
+- тёмная (полностью чёрная) и светлая темы + режим «как в системе»;
+- боковая панель с переключателем **К / ЛС** ↔ **Аккаунт / Настройки**.
 
-Проверено сквозным тестом: регистрация → вход → отправка → чтение из Firebase → расшифровка. В сыром JSON открытого текста нет.
+Сквозной тест (регистрация → вход → отправка → чтение вторым аккаунтом → расшифровка) проходит.
 
 ## Запуск
 
@@ -20,66 +22,94 @@ cd D:\builder\vsinsiders\uqoz
 dotnet run --project uqoz/uqoz.fsproj
 ```
 
-Нужен .NET 10 SDK. Приложение создаёт двух пользователей и открывает диалог автоматически — регистрируй второй ник в другом окне/на другой машине и переписывайся.
+Нужен .NET 10 SDK.
 
-## Firebase
+## Настройка Firebase
 
-База: `https://uqoz-cazu-default-rtdb.europe-west1.firebasedatabase.app/`
+Проект: `uqoz-cazu`.
 
-URL задан по умолчанию в `Firebase.fs` (`FirebaseConfig.defaultUrl`) и переопределяется переменной окружения:
+### 1. Web API key
+
+Ключ берётся из одного из источников:
+
+1. переменная окружения `UQOZ_FIREBASE_API_KEY`;
+2. файл `uqoz/firebase.key` рядом с `.fsproj` (копируется в папку сборки, добавлен в `.gitignore`);
+3. иначе приложение покажет ошибку «Не задан Firebase Web API key».
 
 ```powershell
-$env:UQOZ_FIREBASE_URL = "https://другой-проект.firebasedatabase.app"
+setx UQOZ_FIREBASE_API_KEY "AIza..."
 ```
 
-### Правила базы
+URL базы по умолчанию — `https://uqoz-cazu-default-rtdb.europe-west1.firebasedatabase.app`, переопределяется через `UQOZ_FIREBASE_URL`.
 
-Сейчас вход в приложении собственный (ник + пароль), без Firebase Auth, поэтому правила RTDB должны разрешать доступ клиенту:
+### 2. Включить вход
 
-```json
+Firebase Console → **Authentication → Sign-in method → Email/Password → Enable**.
+
+### 3. Правила Realtime Database
+
+```
 {
   "rules": {
-    ".read": true,
-    ".write": true
+    ".read": false,
+    ".write": false,
+    "users": {
+      ".read": "auth != null",
+      "$uid": {
+        ".write": "auth != null && auth.uid == $uid"
+      }
+    },
+    "nicks": {
+      ".read": "auth != null",
+      "$nick": {
+        ".write": "auth != null && !data.exists() && newData.val() == auth.uid"
+      }
+    },
+    "messages": {
+      "$chatId": {
+        ".read": "auth != null && ($chatId.beginsWith(auth.uid + '__') || $chatId.endsWith('__' + auth.uid))",
+        ".write": "auth != null && ($chatId.beginsWith(auth.uid + '__') || $chatId.endsWith('__' + auth.uid))"
+      }
+    }
   }
 }
 ```
 
-⚠️ **Это значит, что любой, кто знает URL базы, может читать и менять данные.** Для домашнего/учебного проекта приемлемо, для публичного — нет. Правильный путь: включить Firebase Authentication (Email/Password) и правила вида `"auth != null"`; слой авторизации в `Firebase.fs` тогда меняется на Identity Toolkit REST.
+Без этих правил база открыта: любой, кто знает URL, может читать и менять данные.
 
-## Структура данных
+## Данные
 
 ```
-users/{ник}                     { name, hash, createdAt, avatar }
-messages/{chatId}/{pushId}      { from, cipher, iv, ts }
+users/{uid}                 { nick, email, avatar, createdAt }
+nicks/{ник}                 uid
+messages/{uidA__uidB}/{id}  { from, fromNick, cipher, iv, ts }
 ```
 
-`chatId` не зависит от того, кто открыл диалог: ники сортируются и склеиваются через `__`.
-Ключ шифрования чата = `SHA-256(chatId + секрет приложения)` — одинаковый у обоих участников.
+`chatId` — uid участников, отсортированные и склеенные через `__`.
+Ключ шифрования чата: `SHA-256(chatId + секрет приложения)`.
 
-## Шифрование: честные ограничения
+## Ограничения шифрования
 
-- Пароли хранятся как BCrypt-хеши — это нормально.
-- Сообщения AES-256-CBC, IV рядом с шифротекстом.
-- Секрет приложения зашит в клиент, поэтому это **шифрование на уровне приложения, а не полноценный E2EE**: тот, у кого есть исходники/бинарник и доступ к базе, может расшифровать переписку. Для настоящего E2EE нужен обмен ключами (X3DH/Double Ratchet) — отдельная большая задача.
-- Старый модуль `Crypto.fs` (`Encryption`) раньше молча не шифровал из-за ключа в 31 байт; теперь ключ выводится через SHA-256 и шифрование реально выполняется.
+Пароли обрабатывает Firebase. Сообщения — AES-256-CBC, IV хранится рядом с шифротекстом.
+Секрет приложения зашит в клиент, поэтому это **шифрование на уровне приложения, а не E2EE**: у кого есть бинарник и доступ к базе, тот может расшифровать. Для настоящего E2EE нужен обмен ключами (X3DH / Double Ratchet).
 
-## Структура проекта
+## Структура
 
 ```
 uqoz/
-  Crypto.fs                     AES (модуль Encryption + CryptoService)
-  Firebase.fs                   REST-клиент RTDB, пользователи, чаты
-  Db.fs, AuthService.fs, …      старый слой SQLite/EF Core (в UI не используется)
-  ViewModels/MainViewModel.fs   состояние приложения и команды
+  Crypto.fs                     AES (Encryption + CryptoService)
+  Firebase.fs                   Auth REST + Realtime Database REST
+  ViewModels/MainViewModel.fs   состояние, команды, темы, опрос
   Views/MainWindow.axaml        интерфейс
+  App.axaml                     темы и стили
+  Db.fs, AuthService.fs, …      старый слой SQLite/EF Core (не используется)
 ```
 
-Старые `Db.fs`, `AuthService.fs`, `ChatService.fs`, `FriendService.fs`, `UserSettingsService.fs` оставлены как задел/история и не подключены к интерфейсу. Их можно удалить, когда Firebase-слой стабилизируется.
+Старые `Db.fs`, `AuthService.fs`, `ChatService.fs`, `FriendService.fs`, `UserSettingsService.fs` оставлены как история и не подключены к UI. Их можно удалить вместе с пакетами EF Core/SQLite, когда не понадобятся.
 
-## Дальше по плану
+## Дальше
 
 - realtime через SSE вместо опроса;
-- добавление в друзья и личные списки контактов;
-- нормальная авторизация Firebase Auth + правила `auth != null`;
-- звонки (сейчас макет; в зависимостях уже есть SIPSorcery).
+- каналы (вкладка К) и friends-список;
+- звонки (сейчас макет; в зависимостях есть SIPSorcery);
+- аватары и статусы.

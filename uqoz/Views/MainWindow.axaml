@@ -4,138 +4,324 @@
         x:Class="uqoz.Views.MainWindow"
         x:DataType="vm:MainViewModel"
         Title="uqoz"
-        Width="1050" Height="680"
-        WindowStartupLocation="CenterScreen"
-        Background="#1E1F22">
+        Width="1200" Height="760"
+        MinWidth="900" MinHeight="600"
+        WindowStartupLocation="CenterScreen">
 
 	<Grid>
-		<!-- ЭКРАН 1: ВХОД / РЕГИСТРАЦИЯ (ник + пароль, Firebase RTDB) -->
+
+		<!-- ================= ЭКРАН ВХОДА ================= -->
 		<Grid IsVisible="{Binding !IsLoggedIn}" HorizontalAlignment="Center" VerticalAlignment="Center">
-			<Border Background="#2B2D31" CornerRadius="12" Padding="30" Width="380">
-				<StackPanel Spacing="15">
-					<TextBlock Text="uqoz" FontSize="26" FontWeight="Bold" HorizontalAlignment="Center" Foreground="#5865F2"/>
-					<TextBlock Text="Вход по нику" FontSize="14" Foreground="#B5BAC1" HorizontalAlignment="Center"/>
+			<Border Background="{DynamicResource Surface}"
+			        BorderBrush="{DynamicResource Border}" BorderThickness="1"
+			        CornerRadius="20" Padding="34" Width="420">
+				<StackPanel Spacing="14">
+					<TextBlock Text="uqoz" FontSize="34" FontWeight="Bold"
+					           Foreground="{DynamicResource Accent}" HorizontalAlignment="Center"/>
+					<TextBlock Text="Мессенджер с шифрованием" FontSize="12"
+					           Foreground="{DynamicResource TextMuted}" HorizontalAlignment="Center"
+					           Margin="0,0,0,8"/>
 
-					<TextBox PlaceholderText="Ник (3–20 символов)" Text="{Binding AuthUsername, Mode=TwoWay}"
-					         Background="#1E1F22" CornerRadius="6" Padding="10"/>
-					<TextBox PlaceholderText="Пароль" PasswordChar="*" Text="{Binding AuthPassword, Mode=TwoWay}"
-					         Background="#1E1F22" CornerRadius="6" Padding="10"/>
+					<TextBox PlaceholderText="Ник (нужен только для регистрации)"
+					         Text="{Binding AuthNick, Mode=TwoWay}"/>
+					<TextBox PlaceholderText="Почта" Text="{Binding AuthEmail, Mode=TwoWay}"/>
+					<TextBox PlaceholderText="Пароль" PasswordChar="•"
+					         Text="{Binding AuthPassword, Mode=TwoWay}"/>
 
-					<Grid ColumnDefinitions="*, *">
-						<Button Grid.Column="0" Content="Войти" Command="{Binding LoginCommand}"
-						        HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"
-						        Background="#5865F2" Foreground="White" Padding="10" CornerRadius="6" FontWeight="Bold"
-						        Margin="0,0,5,0"/>
-						<Button Grid.Column="1" Content="Регистрация" Command="{Binding RegisterCommand}"
-						        HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"
-						        Background="#3B3D44" Foreground="White" Padding="10" CornerRadius="6"
-						        Margin="5,0,0,0"/>
+					<Grid ColumnDefinitions="*,*" Margin="0,4,0,0">
+						<Button Grid.Column="0" Content="Войти" Classes="primary"
+						        Command="{Binding LoginCommand}" Margin="0,0,4,0"/>
+						<Button Grid.Column="1" Content="Регистрация"
+						        Command="{Binding RegisterCommand}" Margin="4,0,0,0"/>
 					</Grid>
 
-					<TextBlock Text="Подключение к Firebase…" IsVisible="{Binding IsBusy}"
-					           Foreground="#FEE75C" HorizontalAlignment="Center"/>
-					<TextBlock Text="{Binding AuthErrorText}" Foreground="#F23F43"
-					           HorizontalAlignment="Center" TextWrapping="Wrap"/>
+					<TextBlock Text="Подключаемся…" IsVisible="{Binding IsBusy}"
+					           Foreground="{DynamicResource TextMuted}" HorizontalAlignment="Center"/>
+					<TextBlock Text="{Binding AuthErrorText}" Foreground="{DynamicResource Danger}"
+					           TextWrapping="Wrap" HorizontalAlignment="Center"/>
+
+					<Border Height="1" Background="{DynamicResource Border}" Margin="0,6"/>
+
+					<StackPanel Orientation="Horizontal" Spacing="6" HorizontalAlignment="Center">
+						<TextBlock Text="Тема:" VerticalAlignment="Center" FontSize="12"
+						           Foreground="{DynamicResource TextMuted}"/>
+						<Button Content="Тёмная" Classes="pill" Classes.active="{Binding IsDarkTheme}"
+						        Command="{Binding SetThemeCommand}" CommandParameter="dark" FontSize="12"/>
+						<Button Content="Светлая" Classes="pill" Classes.active="{Binding IsLightTheme}"
+						        Command="{Binding SetThemeCommand}" CommandParameter="light" FontSize="12"/>
+						<Button Content="Система" Classes="pill" Classes.active="{Binding IsSystemTheme}"
+						        Command="{Binding SetThemeCommand}" CommandParameter="system" FontSize="12"/>
+					</StackPanel>
 				</StackPanel>
 			</Border>
 		</Grid>
 
-		<!-- ЭКРАН 2: МЕССЕНДЖЕР -->
-		<Grid IsVisible="{Binding IsLoggedIn}" ColumnDefinitions="260, *, 300">
+		<!-- ================= ОСНОВНОЙ ЭКРАН ================= -->
+		<Grid IsVisible="{Binding IsLoggedIn}" ColumnDefinitions="280,*,320">
 
-			<!-- ЛЕВАЯ ПАНЕЛЬ: КОНТАКТЫ -->
-			<Grid Grid.Column="0" RowDefinitions="Auto, *, Auto" Background="#2B2D31">
-				<StackPanel Grid.Row="0" Margin="15,15,15,5">
-					<TextBlock Text="uqoz" FontSize="20" FontWeight="Bold" Foreground="#5865F2"/>
-					<TextBlock Text="{Binding CurrentUserName}" FontSize="12" Foreground="#B5BAC1" Margin="0,2,0,0"/>
-				</StackPanel>
+			<!-- Левая панель -->
+			<Border Grid.Column="0" Background="{DynamicResource Surface}"
+			        BorderBrush="{DynamicResource Border}" BorderThickness="0,0,1,0">
+				<Grid RowDefinitions="Auto,*,Auto">
 
-				<DockPanel Grid.Row="1" Margin="10">
-					<TextBlock DockPanel.Dock="Top" Text="ПОЛЬЗОВАТЕЛИ" FontSize="11" FontWeight="Bold"
-					           Foreground="#949BA4" Margin="5,5,5,10"/>
-					<ListBox ItemsSource="{Binding Contacts}"
-					         SelectedItem="{Binding SelectedContact, Mode=TwoWay}"
-					         Background="Transparent" BorderThickness="0">
-						<ListBox.ItemTemplate>
-							<DataTemplate>
-								<TextBlock Text="{Binding}" Foreground="White" Padding="6,8"/>
-							</DataTemplate>
-						</ListBox.ItemTemplate>
-					</ListBox>
-				</DockPanel>
+					<Grid Grid.Row="0" ColumnDefinitions="*,Auto" Margin="18,16,14,10">
+						<StackPanel Grid.Column="0">
+							<TextBlock Text="uqoz" FontSize="22" FontWeight="Bold"
+							           Foreground="{DynamicResource Accent}"/>
+							<TextBlock Text="{Binding CurrentNick}" FontSize="12"
+							           Foreground="{DynamicResource TextMuted}"/>
+						</StackPanel>
+						<Button Grid.Column="1" Content="⟳" Classes="ghost" Width="34" Height="34"
+						        ToolTip.Tip="Обновить" Command="{Binding RefreshCommand}" FontSize="16"/>
+					</Grid>
 
-				<StackPanel Grid.Row="2" Orientation="Horizontal" Spacing="8" Margin="10">
-					<Button Content="Обновить" Command="{Binding RefreshCommand}" HorizontalAlignment="Stretch"/>
-					<Button Content="Выйти" Command="{Binding LogoutCommand}" HorizontalAlignment="Stretch"/>
-				</StackPanel>
-			</Grid>
+					<Grid Grid.Row="1" Margin="12,4,12,8">
 
-			<!-- ЦЕНТРАЛЬНАЯ ЗОНА: СООБЩЕНИЯ -->
-			<Grid Grid.Column="1" RowDefinitions="Auto, *, Auto" Background="#313338">
-				<Border Grid.Row="0" Background="#2B2D31" Padding="15,12">
-					<StackPanel>
-						<TextBlock Text="{Binding ActiveChatTitle}" FontWeight="Bold" FontSize="16"/>
-						<TextBlock Text="{Binding LastError}" Foreground="#F23F43" FontSize="11" TextWrapping="Wrap"/>
-					</StackPanel>
+						<!-- КАНАЛЫ -->
+						<StackPanel IsVisible="{Binding IsChannelsView}" Spacing="10">
+							<TextBlock Text="КАНАЛЫ" FontSize="11" FontWeight="Bold"
+							           Foreground="{DynamicResource TextMuted}" Margin="6,0"/>
+							<Border Background="{DynamicResource SurfaceAlt}" CornerRadius="12" Padding="12">
+								<StackPanel Spacing="3">
+									<TextBlock Text="# общий" FontWeight="SemiBold"/>
+									<TextBlock Text="Каналы появятся в следующей версии"
+									           FontSize="11" Foreground="{DynamicResource TextMuted}"
+									           TextWrapping="Wrap"/>
+								</StackPanel>
+							</Border>
+						</StackPanel>
+
+						<!-- ЛИЧНЫЕ СООБЩЕНИЯ -->
+						<DockPanel IsVisible="{Binding IsDmView}">
+							<TextBlock DockPanel.Dock="Top" Text="ЛИЧНЫЕ СООБЩЕНИЯ" FontSize="11" FontWeight="Bold"
+							           Foreground="{DynamicResource TextMuted}" Margin="6,0,6,8"/>
+							<ListBox ItemsSource="{Binding Contacts}"
+							         SelectedItem="{Binding SelectedContact, Mode=TwoWay}">
+								<ListBox.ItemTemplate>
+									<DataTemplate>
+										<Grid ColumnDefinitions="36,*">
+											<Border Grid.Column="0" Width="34" Height="34" CornerRadius="17"
+											        Background="{DynamicResource SurfaceAlt}">
+												<TextBlock Text="{Binding Initial}" FontSize="13" FontWeight="SemiBold"
+												           HorizontalAlignment="Center" VerticalAlignment="Center"/>
+											</Border>
+											<StackPanel Grid.Column="1" Margin="10,0,0,0" VerticalAlignment="Center">
+												<TextBlock Text="{Binding Nick}" FontSize="14" FontWeight="SemiBold"
+												           TextTrimming="CharacterEllipsis"/>
+												<TextBlock Text="{Binding Email}" FontSize="11"
+												           Foreground="{DynamicResource TextMuted}"
+												           TextTrimming="CharacterEllipsis"/>
+											</StackPanel>
+										</Grid>
+									</DataTemplate>
+								</ListBox.ItemTemplate>
+							</ListBox>
+						</DockPanel>
+
+						<!-- АККАУНТ -->
+						<StackPanel IsVisible="{Binding IsAccountView}" Spacing="12">
+							<TextBlock Text="АККАУНТ" FontSize="11" FontWeight="Bold"
+							           Foreground="{DynamicResource TextMuted}" Margin="6,0"/>
+							<Border Width="72" Height="72" CornerRadius="36"
+							        Background="{DynamicResource Accent}" HorizontalAlignment="Center">
+								<TextBlock Text="{Binding CurrentInitial}" FontSize="28" FontWeight="Bold"
+								           Foreground="{DynamicResource OnAccent}"
+								           HorizontalAlignment="Center" VerticalAlignment="Center"/>
+							</Border>
+							<StackPanel Spacing="2" HorizontalAlignment="Center">
+								<TextBlock Text="{Binding CurrentNick}" FontSize="16" FontWeight="SemiBold"
+								           HorizontalAlignment="Center"/>
+								<TextBlock Text="{Binding CurrentEmail}" FontSize="12"
+								           Foreground="{DynamicResource TextMuted}" HorizontalAlignment="Center"/>
+							</StackPanel>
+							<Button Content="Выйти" Classes="danger" Command="{Binding LogoutCommand}"
+							        HorizontalAlignment="Stretch" Margin="0,10,0,0"/>
+						</StackPanel>
+
+						<!-- НАСТРОЙКИ -->
+						<StackPanel IsVisible="{Binding IsSettingsView}" Spacing="12">
+							<TextBlock Text="НАСТРОЙКИ" FontSize="11" FontWeight="Bold"
+							           Foreground="{DynamicResource TextMuted}" Margin="6,0"/>
+							<TextBlock Text="Тема оформления" FontSize="12"
+							           Foreground="{DynamicResource TextMuted}" Margin="6,4,0,0"/>
+							<StackPanel Spacing="6">
+								<Button Content="Тёмная (чёрная)" Classes="pill" Classes.active="{Binding IsDarkTheme}"
+								        HorizontalAlignment="Stretch"
+								        Command="{Binding SetThemeCommand}" CommandParameter="dark"/>
+								<Button Content="Светлая" Classes="pill" Classes.active="{Binding IsLightTheme}"
+								        HorizontalAlignment="Stretch"
+								        Command="{Binding SetThemeCommand}" CommandParameter="light"/>
+								<Button Content="Как в системе" Classes="pill" Classes.active="{Binding IsSystemTheme}"
+								        HorizontalAlignment="Stretch"
+								        Command="{Binding SetThemeCommand}" CommandParameter="system"/>
+							</StackPanel>
+							<Border Height="1" Background="{DynamicResource Border}" Margin="6,8"/>
+							<TextBlock Text="Сообщения шифруются AES-256 перед отправкой в Firebase."
+							           FontSize="11" Foreground="{DynamicResource TextMuted}"
+							           TextWrapping="Wrap" Margin="6,0"/>
+						</StackPanel>
+					</Grid>
+
+					<!-- ПЕРЕКЛЮЧАТЕЛЬ ВНИЗУ: К/ЛС ↔ АККАУНТ/НАСТРОЙКИ -->
+					<Border Grid.Row="2" Background="{DynamicResource SurfaceAlt}"
+					        CornerRadius="18" Margin="12" Padding="5">
+						<Grid>
+							<StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Spacing="4"
+							            IsVisible="{Binding IsTabMode}">
+								<Button Content="К" Width="54" Classes="pill" Classes.active="{Binding IsChannelsView}"
+								        Command="{Binding ShowChannelsCommand}" ToolTip.Tip="Каналы"/>
+								<Button Content="↑" Width="36" Classes="pill ghost"
+								        Command="{Binding ToggleBottomPanelCommand}" ToolTip.Tip="Аккаунт и настройки"/>
+								<Button Content="ЛС" Width="54" Classes="pill" Classes.active="{Binding IsDmView}"
+								        Command="{Binding ShowDmsCommand}" ToolTip.Tip="Личные сообщения"/>
+							</StackPanel>
+							<StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Spacing="4"
+							            IsVisible="{Binding !IsTabMode}">
+								<Button Content="↓" Width="36" Classes="pill ghost"
+								        Command="{Binding ToggleBottomPanelCommand}" ToolTip.Tip="Назад к чатам"/>
+								<Button Content="Аккаунт" Classes="pill" Classes.active="{Binding IsAccountView}"
+								        Command="{Binding ShowAccountCommand}"/>
+								<Button Content="Настройки" Classes="pill" Classes.active="{Binding IsSettingsView}"
+								        Command="{Binding ShowSettingsCommand}"/>
+							</StackPanel>
+						</Grid>
+					</Border>
+				</Grid>
+			</Border>
+
+			<!-- Центр: переписка -->
+			<Grid Grid.Column="1" RowDefinitions="Auto,*,Auto">
+
+				<Border Grid.Row="0" Background="{DynamicResource Surface}"
+				        BorderBrush="{DynamicResource Border}" BorderThickness="0,0,0,1" Padding="20,14">
+					<Grid ColumnDefinitions="*,Auto">
+						<StackPanel Grid.Column="0" Spacing="2">
+							<TextBlock Text="{Binding ActiveChatTitle}" FontSize="17" FontWeight="SemiBold"/>
+							<TextBlock Text="{Binding ActiveChatSubtitle}" FontSize="11"
+							           Foreground="{DynamicResource TextMuted}"/>
+							<TextBlock Text="{Binding LastError}" FontSize="11"
+							           Foreground="{DynamicResource Danger}" TextWrapping="Wrap"/>
+						</StackPanel>
+						<Border Grid.Column="1" Width="8" Height="8" CornerRadius="4"
+						        Background="{DynamicResource Accent}" VerticalAlignment="Center"/>
+					</Grid>
 				</Border>
 
-				<ListBox Grid.Row="1" ItemsSource="{Binding Messages}" Background="Transparent" Margin="10">
-					<ListBox.ItemTemplate>
-						<DataTemplate>
-							<StackPanel Margin="0,4">
-								<StackPanel Orientation="Horizontal" Spacing="6">
-									<TextBlock Text="{Binding Sender}" FontSize="12" FontWeight="Bold" Foreground="#5865F2"/>
-									<TextBlock Text="{Binding TimeText}" FontSize="11" Foreground="#949BA4"/>
-								</StackPanel>
-								<TextBlock Text="{Binding Text}" TextWrapping="Wrap" Foreground="White" Margin="0,2,0,0"/>
-							</StackPanel>
-						</DataTemplate>
-					</ListBox.ItemTemplate>
-				</ListBox>
+				<Grid Grid.Row="1">
+					<ScrollViewer Padding="20,12" VerticalScrollBarVisibility="Auto">
+						<ItemsControl ItemsSource="{Binding Messages}">
+							<ItemsControl.ItemTemplate>
+								<DataTemplate>
+									<Grid Margin="0,3">
+										<Border IsVisible="{Binding IsMine}" HorizontalAlignment="Right"
+										        MaxWidth="480" Background="{DynamicResource Accent}"
+										        CornerRadius="16,16,4,16" Padding="12,8">
+											<StackPanel>
+												<TextBlock Text="{Binding Text}" TextWrapping="Wrap" Foreground="#FFFFFF"/>
+												<TextBlock Text="{Binding TimeText}" FontSize="10" Foreground="#CCFFFFFF"
+												           HorizontalAlignment="Right" Margin="0,3,0,0"/>
+											</StackPanel>
+										</Border>
+										<Border IsVisible="{Binding !IsMine}" HorizontalAlignment="Left"
+										        MaxWidth="480" Background="{DynamicResource BubbleOther}"
+										        CornerRadius="16,16,16,4" Padding="12,8">
+											<StackPanel>
+												<TextBlock Text="{Binding Sender}" FontSize="11" FontWeight="SemiBold"
+												           Foreground="{DynamicResource Accent}"/>
+												<TextBlock Text="{Binding Text}" TextWrapping="Wrap"/>
+												<TextBlock Text="{Binding TimeText}" FontSize="10"
+												           Foreground="{DynamicResource TextMuted}"
+												           HorizontalAlignment="Right" Margin="0,3,0,0"/>
+											</StackPanel>
+										</Border>
+									</Grid>
+								</DataTemplate>
+							</ItemsControl.ItemTemplate>
+						</ItemsControl>
+					</ScrollViewer>
 
-				<Border Grid.Row="2" Padding="10">
-					<Grid ColumnDefinitions="*, Auto">
-						<TextBox Grid.Column="0" Text="{Binding NewMessageText, Mode=TwoWay}" PlaceholderText="Написать сообщение..."
-						         Background="#383A40" BorderThickness="0" CornerRadius="8" Padding="10"/>
-						<Button Grid.Column="1" Command="{Binding SendMessageCommand}" ToolTip.Tip="Отправить (AES)"
-						        Margin="8,0,0,0" Padding="10" Background="#5865F2" CornerRadius="8">
-							<PathIcon Data="M2,21L23,12L2,3V10L17,12L2,14V21Z" Width="16" Height="16"/>
+					<StackPanel IsVisible="{Binding !HasContact}" HorizontalAlignment="Center"
+					            VerticalAlignment="Center" Spacing="6">
+						<TextBlock Text="Тишина" FontSize="22" FontWeight="SemiBold" HorizontalAlignment="Center"/>
+						<TextBlock Text="Выберите собеседника в списке слева"
+						           Foreground="{DynamicResource TextMuted}" HorizontalAlignment="Center"/>
+					</StackPanel>
+				</Grid>
+
+				<Border Grid.Row="2" Background="{DynamicResource Surface}"
+				        BorderBrush="{DynamicResource Border}" BorderThickness="0,1,0,0" Padding="16,12">
+					<Grid ColumnDefinitions="*,Auto">
+						<TextBox Grid.Column="0" Text="{Binding NewMessageText, Mode=TwoWay}"
+						         PlaceholderText="Сообщение…" IsEnabled="{Binding HasContact}"/>
+						<Button Grid.Column="1" Classes="primary" Width="48" Margin="8,0,0,0"
+						        Command="{Binding SendMessageCommand}" ToolTip.Tip="Отправить">
+							<PathIcon Data="M2,21L23,12L2,3V10L17,12L2,14V21Z" Width="16" Height="16"
+							          Foreground="{DynamicResource OnAccent}"/>
 						</Button>
 					</Grid>
 				</Border>
 			</Grid>
 
-			<!-- ПРАВАЯ ПАНЕЛЬ: ПРОФИЛЬ И ЗВОНКИ (макет) -->
-			<Grid Grid.Column="2" Background="#232428" RowDefinitions="*, Auto">
-				<StackPanel Grid.Row="0" VerticalAlignment="Center" HorizontalAlignment="Center" Spacing="15">
+			<!-- Правая панель: профиль и звонок -->
+			<Border Grid.Column="2" Background="{DynamicResource Surface}"
+			        BorderBrush="{DynamicResource Border}" BorderThickness="1,0,0,0">
+				<Grid RowDefinitions="Auto,Auto,*,Auto" Margin="18">
 
-					<Border IsVisible="{Binding HasIncomingCall}" Background="#2B2D31" CornerRadius="10" Padding="15" Margin="10">
-						<StackPanel Spacing="10">
-							<TextBlock Text="Входящий P2P звонок..." FontWeight="Bold" Foreground="#FEE75C" HorizontalAlignment="Center"/>
-							<StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Spacing="10">
-								<Button Content="Принять" Command="{Binding AcceptCallCommand}" Background="#23A55A" Padding="8,4" CornerRadius="6"/>
-								<Button Content="Отклонить" Command="{Binding RejectCallCommand}" Background="#DA373C" Padding="8,4" CornerRadius="6"/>
+					<StackPanel Grid.Row="0" Spacing="10" HorizontalAlignment="Center" Margin="0,10,0,0">
+						<Border Width="64" Height="64" CornerRadius="32"
+						        Background="{DynamicResource Accent}" HorizontalAlignment="Center">
+							<TextBlock Text="{Binding CurrentInitial}" FontSize="24" FontWeight="Bold"
+							           Foreground="{DynamicResource OnAccent}"
+							           HorizontalAlignment="Center" VerticalAlignment="Center"/>
+						</Border>
+						<TextBlock Text="{Binding CurrentNick}" FontSize="16" FontWeight="SemiBold"
+						           HorizontalAlignment="Center"/>
+						<TextBlock Text="{Binding CurrentEmail}" FontSize="11"
+						           Foreground="{DynamicResource TextMuted}" HorizontalAlignment="Center"/>
+					</StackPanel>
+
+					<Border Grid.Row="1" Height="1" Background="{DynamicResource Border}" Margin="0,16"/>
+
+					<StackPanel Grid.Row="2" Spacing="14" VerticalAlignment="Center">
+						<Border IsVisible="{Binding HasIncomingCall}"
+						        Background="{DynamicResource SurfaceAlt}" CornerRadius="14" Padding="14">
+							<StackPanel Spacing="10">
+								<TextBlock Text="Входящий звонок" FontWeight="SemiBold"
+								           HorizontalAlignment="Center"/>
+								<StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Center">
+									<Button Content="Принять" Classes="primary" Command="{Binding AcceptCallCommand}"/>
+									<Button Content="Отклонить" Classes="danger" Command="{Binding RejectCallCommand}"/>
+								</StackPanel>
 							</StackPanel>
+						</Border>
+
+						<PathIcon Data="M12,15C13.66,15 15,13.66 15,12C15,10.34 13.66,9 12,9C10.34,9 9,10.34 9,12C9,13.66 10.34,15 12,15M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2Z"
+						          Width="44" Height="44" Foreground="{DynamicResource Accent}"
+						          HorizontalAlignment="Center"/>
+						<TextBlock Text="{Binding StatusText}" Foreground="{DynamicResource TextMuted}"
+						           HorizontalAlignment="Center" FontSize="12"/>
+						<Button Content="Позвонить" Classes="primary" Command="{Binding StartCallCommand}"
+						        HorizontalAlignment="Stretch"/>
+						<StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Center">
+							<Button Command="{Binding ToggleMuteCommand}" ToolTip.Tip="Микрофон" Width="44" Height="40">
+								<PathIcon Data="M12,2A3,3 0 0,0 9,5V11A3,3 0 0,0 12,14A3,3 0 0,0 15,11V5A3,3 0 0,0 12,2Z"
+								          Width="16" Height="16"/>
+							</Button>
+							<Button Command="{Binding ToggleScreenShareCommand}" ToolTip.Tip="Экран" Width="44" Height="40">
+								<PathIcon Data="M21,16H3V4H21M21,2H3C1.89,2 1,2.89 1,4V16A2,2 0 0,0 3,18H10V20H8V22H16V20H14V18H21A2,2 0 0,0 23,16V4C23,2.89 22.1,2 21,2Z"
+								          Width="16" Height="16"/>
+							</Button>
+							<Button Classes="danger" Command="{Binding EndCallCommand}" ToolTip.Tip="Завершить" Width="44" Height="40">
+								<PathIcon Data="M12,9C10.4,9 8.85,9.25 7.4,9.72V12.82C7.4,13.22 7.17,13.56 6.84,13.72C5.86,14.21 4.96,14.82 4.16,15.5C3.96,15.7 3.7,15.8 3.42,15.8C3.14,15.8 2.88,15.7 2.68,15.5L0.88,13.7C0.68,13.5 0.58,13.24 0.58,12.96C0.58,12.68 0.68,12.42 0.88,12.22C3.88,9.36 7.8,7.5 12,7.5C16.2,7.5 20.12,9.36 23.12,12.22C23.32,12.42 23.42,12.68 23.42,12.96C23.42,13.24 23.32,13.5 23.12,13.7L21.32,15.5C21.12,15.7 20.86,15.8 20.58,15.8C20.3,15.8 20.04,15.7 19.84,15.5C19.04,14.82 18.14,14.21 17.16,13.72C16.83,13.56 16.6,13.22 16.6,12.82V9.72C15.15,9.25 13.6,9 12,9Z"
+								          Width="16" Height="16"/>
+							</Button>
 						</StackPanel>
-					</Border>
+					</StackPanel>
 
-					<PathIcon Data="M12,15C13.66,15 15,13.66 15,12C15,10.34 13.66,9 12,9C10.34,9 9,10.34 9,12C9,13.66 10.34,15 12,15M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2Z" Width="48" Height="48" Foreground="#5865F2"/>
-					<TextBlock Text="{Binding StatusText}" Foreground="#B5BAC1" HorizontalAlignment="Center"/>
-					<Button Content=" Позвонить" Command="{Binding StartCallCommand}" Background="#23A55A" CornerRadius="6" Padding="10,6"/>
-				</StackPanel>
-
-				<StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Center" Spacing="12" Margin="15">
-					<Button Command="{Binding ToggleMuteCommand}" ToolTip.Tip="Включить/Выключить микрофон" Padding="12" CornerRadius="20">
-						<PathIcon Data="M12,2A3,3 0 0,0 9,5V11A3,3 0 0,0 12,14A3,3 0 0,0 15,11V5A3,3 0 0,0 12,2Z" Width="18" Height="18"/>
-					</Button>
-					<Button Command="{Binding ToggleScreenShareCommand}" ToolTip.Tip="Демонстрация экрана" Padding="12" CornerRadius="20">
-						<PathIcon Data="M21,16H3V4H21M21,2H3C1.89,2 1,2.89 1,4V16A2,2 0 0,0 3,18H10V20H8V22H16V20H14V18H21A2,2 0 0,0 23,16V4C23,2.89 22.1,2 21,2Z" Width="18" Height="18"/>
-					</Button>
-					<Button Command="{Binding EndCallCommand}" ToolTip.Tip="Завершить вызов" Background="#DA373C" Padding="12" CornerRadius="20">
-						<PathIcon Data="M12,9C10.4,9 8.85,9.25 7.4,9.72V12.82C7.4,13.22 7.17,13.56 6.84,13.72C5.86,14.21 4.96,14.82 4.16,15.5C3.96,15.7 3.7,15.8 3.42,15.8C3.14,15.8 2.88,15.7 2.68,15.5L0.88,13.7C0.68,13.5 0.58,13.24 0.58,12.96C0.58,12.68 0.68,12.42 0.88,12.22C3.88,9.36 7.8,7.5 12,7.5C16.2,7.5 20.12,9.36 23.12,12.22C23.32,12.42 23.42,12.68 23.42,12.96C23.42,13.24 23.32,13.5 23.12,13.7L21.32,15.5C21.12,15.7 20.86,15.8 20.58,15.8C20.3,15.8 20.04,15.7 19.84,15.5C19.04,14.82 18.14,14.21 17.16,13.72C16.83,13.56 16.6,13.22 16.6,12.82V9.72C15.15,9.25 13.6,9 12,9Z" Width="18" Height="18"/>
-					</Button>
-				</StackPanel>
-			</Grid>
+					<Button Grid.Row="3" Content="Выйти из аккаунта" Classes="ghost"
+					        Foreground="{DynamicResource TextMuted}" Command="{Binding LogoutCommand}"/>
+				</Grid>
+			</Border>
 		</Grid>
 	</Grid>
 </Window>

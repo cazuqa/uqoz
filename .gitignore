@@ -8,6 +8,9 @@ obj/
 *.db-shm
 *.db-wal
 
+# firebase web api key
+firebase.key
+
 # user/IDE files
 *.user
 *.suo

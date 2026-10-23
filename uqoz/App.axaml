@@ -2,14 +2,126 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              x:Class="uqoz.App"
              xmlns:local="using:uqoz"
-             RequestedThemeVariant="Default">
-             <!-- "Default" ThemeVariant follows system theme variant. "Dark" or "Light" are other available options. -->
+             RequestedThemeVariant="Dark">
 
     <Application.DataTemplates>
         <local:ViewLocator />
     </Application.DataTemplates>
 
+    <Application.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.ThemeDictionaries>
+
+                <!-- ТЁМНАЯ: реально чёрная -->
+                <ResourceDictionary x:Key="Dark">
+                    <SolidColorBrush x:Key="AppBackground" Color="#000000" />
+                    <SolidColorBrush x:Key="Surface" Color="#08080A" />
+                    <SolidColorBrush x:Key="SurfaceAlt" Color="#141416" />
+                    <SolidColorBrush x:Key="Border" Color="#232327" />
+                    <SolidColorBrush x:Key="TextPrimary" Color="#FFFFFF" />
+                    <SolidColorBrush x:Key="TextMuted" Color="#8A8A93" />
+                    <SolidColorBrush x:Key="Accent" Color="#FF5C35" />
+                    <SolidColorBrush x:Key="OnAccent" Color="#FFFFFF" />
+                    <SolidColorBrush x:Key="Selection" Color="#1C1C20" />
+                    <SolidColorBrush x:Key="Danger" Color="#FF4D4F" />
+                    <SolidColorBrush x:Key="BubbleOther" Color="#17171A" />
+                </ResourceDictionary>
+
+                <!-- СВЕТЛАЯ -->
+                <ResourceDictionary x:Key="Light">
+                    <SolidColorBrush x:Key="AppBackground" Color="#F3F3F5" />
+                    <SolidColorBrush x:Key="Surface" Color="#FFFFFF" />
+                    <SolidColorBrush x:Key="SurfaceAlt" Color="#F6F6F8" />
+                    <SolidColorBrush x:Key="Border" Color="#E2E2E6" />
+                    <SolidColorBrush x:Key="TextPrimary" Color="#121216" />
+                    <SolidColorBrush x:Key="TextMuted" Color="#6C6C76" />
+                    <SolidColorBrush x:Key="Accent" Color="#E8481F" />
+                    <SolidColorBrush x:Key="OnAccent" Color="#FFFFFF" />
+                    <SolidColorBrush x:Key="Selection" Color="#EFEFF2" />
+                    <SolidColorBrush x:Key="Danger" Color="#D93025" />
+                    <SolidColorBrush x:Key="BubbleOther" Color="#F1F1F4" />
+                </ResourceDictionary>
+
+            </ResourceDictionary.ThemeDictionaries>
+        </ResourceDictionary>
+    </Application.Resources>
+
     <Application.Styles>
         <FluentTheme />
+
+        <Style Selector="Window">
+            <Setter Property="Background" Value="{DynamicResource AppBackground}" />
+            <Setter Property="FontFamily" Value="Inter, Segoe UI, sans-serif" />
+        </Style>
+
+        <Style Selector="TextBlock">
+            <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
+        </Style>
+
+        <Style Selector="TextBox">
+            <Setter Property="Background" Value="{DynamicResource SurfaceAlt}" />
+            <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource Border}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="10" />
+            <Setter Property="Padding" Value="12,9" />
+        </Style>
+
+        <Style Selector="Button">
+            <Setter Property="Background" Value="{DynamicResource SurfaceAlt}" />
+            <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="CornerRadius" Value="10" />
+            <Setter Property="Padding" Value="14,9" />
+            <Setter Property="HorizontalContentAlignment" Value="Center" />
+        </Style>
+
+        <Style Selector="Button.primary">
+            <Setter Property="Background" Value="{DynamicResource Accent}" />
+            <Setter Property="Foreground" Value="{DynamicResource OnAccent}" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+        </Style>
+
+        <Style Selector="Button.ghost">
+            <Setter Property="Background" Value="Transparent" />
+        </Style>
+
+        <Style Selector="Button.pill">
+            <Setter Property="CornerRadius" Value="16" />
+            <Setter Property="Padding" Value="16,7" />
+        </Style>
+
+        <Style Selector="Button.active">
+            <Setter Property="Background" Value="{DynamicResource Accent}" />
+            <Setter Property="Foreground" Value="{DynamicResource OnAccent}" />
+        </Style>
+
+        <Style Selector="Button.danger">
+            <Setter Property="Background" Value="{DynamicResource Danger}" />
+            <Setter Property="Foreground" Value="#FFFFFF" />
+        </Style>
+
+        <Style Selector="ListBox">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+        </Style>
+
+        <Style Selector="ListBoxItem">
+            <Setter Property="CornerRadius" Value="10" />
+            <Setter Property="Padding" Value="8,7" />
+            <Setter Property="Margin" Value="0,1" />
+        </Style>
+
+        <Style Selector="ListBoxItem:selected /template/ ContentPresenter">
+            <Setter Property="Background" Value="{DynamicResource Selection}" />
+        </Style>
+
+        <Style Selector="ListBoxItem:pointerover /template/ ContentPresenter">
+            <Setter Property="Background" Value="{DynamicResource SurfaceAlt}" />
+        </Style>
+
+        <Style Selector="ScrollViewer">
+            <Setter Property="Background" Value="Transparent" />
+        </Style>
     </Application.Styles>
 </Application>
