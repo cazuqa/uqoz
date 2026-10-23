@@ -2,6 +2,7 @@ namespace uqoz.ViewModels
 
 open System
 open System.Collections.ObjectModel
+open System.Threading
 open System.Threading.Tasks
 open Avalonia
 open Avalonia.Styling
@@ -11,7 +12,8 @@ open CommunityToolkit.Mvvm.Input
 open uqoz.Firebase
 
 /// Сообщение, уже расшифрованное для показа в UI.
-type MessageItem(sender: string, text: string, timestamp: DateTime, isMine: bool) =
+type MessageItem(id: string, sender: string, text: string, timestamp: DateTime, isMine: bool) =
+    member val Id = id
     member val Sender = sender with get, set
     member val Text = text with get, set
     member val Timestamp = timestamp with get, set
@@ -44,22 +46,18 @@ type MainViewModel() as this =
     let mutable newMessageText = ""
     let messages = ObservableCollection<MessageItem>()
 
+    // --- потоки (realtime) ---
+    let mutable chatStream: CancellationTokenSource = null
+    let mutable usersStream: CancellationTokenSource = null
+
     // --- прочее ---
     let mutable statusText = "Готов к звонку"
     let mutable hasIncomingCall = false
     let mutable isBusy = false
     let mutable lastError = ""
+    let mutable isDeleteConfirm = false
 
-    let timer =
-        new DispatcherTimer(
-            TimeSpan.FromSeconds 2.0,
-            DispatcherPriority.Background,
-            EventHandler(fun _ _ -> this.RefreshMessagesAsync() |> ignore)
-        )
-
-    do
-        timer.Start()
-        this.ApplyTheme themeName
+    do this.ApplyTheme themeName
 
     // --- тема ---
 
@@ -164,6 +162,10 @@ type MainViewModel() as this =
         with get () = lastError
         and set value = this.SetProperty(&lastError, value) |> ignore
 
+    member this.IsDeleteConfirm
+        with get () = isDeleteConfirm
+        and set value = this.SetProperty(&isDeleteConfirm, value) |> ignore
+
     // --- контакты ---
 
     member this.Contacts = contacts
@@ -178,7 +180,7 @@ type MainViewModel() as this =
                 this.OnPropertyChanged "ActiveChatTitle"
                 this.OnPropertyChanged "ActiveChatSubtitle"
                 messages.Clear()
-                this.RefreshMessagesAsync() |> ignore
+                this.RestartChatStream()
 
     member this.HasContact = not (obj.ReferenceEquals(selectedContact, null))
 
@@ -189,7 +191,7 @@ type MainViewModel() as this =
         if obj.ReferenceEquals(selectedContact, null) then
             "Выберите собеседника слева"
         else
-            "Личные сообщения · шифрование AES-256"
+            "Личные сообщения · AES-256 · в реальном времени"
 
     member this.NewMessageText
         with get () = newMessageText
@@ -207,6 +209,105 @@ type MainViewModel() as this =
         with get () = hasIncomingCall
         and set value = this.SetProperty(&hasIncomingCall, value) |> ignore
 
+    // --- realtime-потоки ---
+
+    /// Список сообщений обновляем только если он реально изменился,
+    /// иначе UI дёргался бы на каждый пакет.
+    member private this.ApplyMessages(list: ChatMessage list) =
+        let same =
+            list.Length = messages.Count
+            && (list
+                |> List.mapi (fun index message -> messages.[index].Id = message.Id)
+                |> List.forall id)
+
+        if not same then
+            messages.Clear()
+
+            for message in list do
+                messages.Add(
+                    MessageItem(
+                        message.Id,
+                        message.FromNick,
+                        message.Text,
+                        message.Timestamp,
+                        message.FromUid = client.Uid
+                    )
+                )
+
+    member private this.StopStreams() =
+        for source in [ chatStream; usersStream ] do
+            if not (isNull source) then
+                try
+                    source.Cancel()
+                with _ -> ()
+
+                source.Dispose()
+
+        chatStream <- null
+        usersStream <- null
+
+    member private this.RestartChatStream() =
+        if not (isNull chatStream) then
+            try
+                chatStream.Cancel()
+            with _ -> ()
+
+            chatStream.Dispose()
+            chatStream <- null
+
+        let peer = selectedContact
+
+        if this.IsLoggedIn && not (obj.ReferenceEquals(peer, null)) then
+            let source = new CancellationTokenSource()
+            chatStream <- source
+            let peerUid = peer.Uid
+
+            client
+                .WatchChatAsync(
+                    peerUid,
+                    (fun list ->
+                        Dispatcher.UIThread.Post(fun () ->
+                            if not source.IsCancellationRequested then
+                                this.ApplyMessages list)),
+                    source.Token
+                )
+                .ContinueWith(fun (finished: Task) ->
+                    if finished.IsFaulted then
+                        Dispatcher.UIThread.Post(fun () ->
+                            this.LastError <-
+                                "Поток сообщений: "
+                                + finished.Exception.GetBaseException().Message))
+            |> ignore
+
+    member private this.StartUsersStream() =
+        if not (isNull usersStream) then
+            try
+                usersStream.Cancel()
+            with _ -> ()
+
+            usersStream.Dispose()
+            usersStream <- null
+
+        if this.IsLoggedIn then
+            let source = new CancellationTokenSource()
+            usersStream <- source
+
+            client
+                .WatchUsersAsync(
+                    (fun users ->
+                        Dispatcher.UIThread.Post(fun () ->
+                            if not source.IsCancellationRequested then
+                                this.ApplyUsers users)),
+                    source.Token
+                )
+                .ContinueWith(fun (finished: Task) ->
+                    if finished.IsFaulted then
+                        Dispatcher.UIThread.Post(fun () ->
+                            this.LastError <-
+                                "Список пользователей: "
+                                + finished.Exception.GetBaseException().Message))
+            |> ignore
+
     // --- работа с сетью ---
 
     member this.RefreshMessagesAsync() : Task = task {
@@ -215,26 +316,27 @@ type MainViewModel() as this =
         if this.IsLoggedIn && not (obj.ReferenceEquals(peer, null)) then
             try
                 let! history = client.HistoryAsync peer.Uid
-
-                if history.Length <> messages.Count then
-                    messages.Clear()
-                    for message in history do
-                        messages.Add(
-                            MessageItem(message.FromNick, message.Text, message.Timestamp, message.FromUid = client.Uid)
-                        )
+                this.ApplyMessages history
             with ex ->
                 this.LastError <- "Сообщения: " + ex.Message
     }
 
-    member private this.LoadContactsAsync() : Task = task {
-        try
-            let! users = client.UsersAsync()
-            let selectedUid = if obj.ReferenceEquals(selectedContact, null) then "" else selectedContact.Uid
+    member private this.ApplyUsers(users: UserProfile list) =
+        let selectedUid = if obj.ReferenceEquals(selectedContact, null) then "" else selectedContact.Uid
+        let peers = users |> List.filter (fun user -> user.Uid <> client.Uid)
 
+        let unchanged =
+            peers.Length = contacts.Count
+            && (peers
+                |> List.mapi (fun index user ->
+                    contacts.[index].Uid = user.Uid && contacts.[index].Nick = user.Nick)
+                |> List.forall id)
+
+        if not unchanged then
             contacts.Clear()
-            for user in users do
-                if user.Uid <> client.Uid then
-                    contacts.Add user
+
+            for user in peers do
+                contacts.Add user
 
             let restored =
                 if selectedUid = "" then None
@@ -244,6 +346,11 @@ type MainViewModel() as this =
             | Some user -> this.SelectedContact <- user
             | None when contacts.Count > 0 -> this.SelectedContact <- contacts.[0]
             | None -> this.SelectedContact <- Unchecked.defaultof<UserProfile>
+
+    member private this.LoadContactsAsync() : Task = task {
+        try
+            let! users = client.UsersAsync()
+            this.ApplyUsers users
         with ex ->
             this.LastError <- "Пользователи: " + ex.Message
     }
@@ -269,6 +376,7 @@ type MainViewModel() as this =
                     this.AuthPassword <- ""
                     this.SetSidebarMode "dm"
                     do! this.LoadContactsAsync()
+                    this.StartUsersStream()
                 | Result.Error message -> this.AuthErrorText <- message
             with ex ->
                 this.AuthErrorText <- "Ошибка: " + ex.Message
@@ -282,18 +390,47 @@ type MainViewModel() as this =
     member this.RegisterCommand =
         AsyncRelayCommand(Func<Task>(fun () -> this.AuthenticateAsync true))
 
+    member private this.ResetSession() =
+        this.StopStreams()
+        client.SignOut()
+        this.IsLoggedIn <- false
+        this.CurrentNick <- ""
+        this.CurrentEmail <- ""
+        this.SelectedContact <- Unchecked.defaultof<UserProfile>
+        this.Messages.Clear()
+        this.Contacts.Clear()
+        this.LastError <- ""
+        this.IsDeleteConfirm <- false
+        this.SetSidebarMode "dm"
+
     member this.LogoutCommand =
         RelayCommand(fun () ->
-            client.SignOut()
-            this.IsLoggedIn <- false
-            this.CurrentNick <- ""
-            this.CurrentEmail <- ""
-            this.SelectedContact <- Unchecked.defaultof<UserProfile>
-            this.Messages.Clear()
-            this.Contacts.Clear()
+            this.ResetSession()
             this.AuthErrorText <- ""
-            this.LastError <- ""
-            this.SetSidebarMode "dm"
+        )
+
+    member this.AskDeleteAccountCommand =
+        RelayCommand(fun () -> this.IsDeleteConfirm <- true)
+
+    member this.CancelDeleteAccountCommand =
+        RelayCommand(fun () -> this.IsDeleteConfirm <- false)
+
+    member this.DeleteAccountCommand =
+        AsyncRelayCommand(
+            Func<Task>(fun () ->
+                task {
+                    if not this.IsBusy then
+                        this.IsBusy <- true
+                        this.LastError <- ""
+
+                        match! client.DeleteMyAccountAsync() with
+                        | Ok () ->
+                            this.ResetSession()
+                            this.AuthErrorText <- "Аккаунт удалён. Ник снова свободен."
+                        | Result.Error message -> this.LastError <- message
+
+                        this.IsBusy <- false
+                })
         )
 
     member this.SendMessageCommand =
@@ -341,7 +478,7 @@ type MainViewModel() as this =
     member this.RejectCallCommand =
         RelayCommand(fun () ->
             this.HasIncomingCall <- false
-            this.StatusText <- "Вызов отклонён"
+            this.StatusText <- "Звонок отклонён"
         )
 
     member this.EndCallCommand =

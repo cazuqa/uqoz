@@ -139,27 +139,48 @@
 						</StackPanel>
 
 						<!-- НАСТРОЙКИ -->
-						<StackPanel IsVisible="{Binding IsSettingsView}" Spacing="12">
-							<TextBlock Text="НАСТРОЙКИ" FontSize="11" FontWeight="Bold"
-							           Foreground="{DynamicResource TextMuted}" Margin="6,0"/>
-							<TextBlock Text="Тема оформления" FontSize="12"
-							           Foreground="{DynamicResource TextMuted}" Margin="6,4,0,0"/>
-							<StackPanel Spacing="6">
-								<Button Content="Тёмная (чёрная)" Classes="pill" Classes.active="{Binding IsDarkTheme}"
-								        HorizontalAlignment="Stretch"
-								        Command="{Binding SetThemeCommand}" CommandParameter="dark"/>
-								<Button Content="Светлая" Classes="pill" Classes.active="{Binding IsLightTheme}"
-								        HorizontalAlignment="Stretch"
-								        Command="{Binding SetThemeCommand}" CommandParameter="light"/>
-								<Button Content="Как в системе" Classes="pill" Classes.active="{Binding IsSystemTheme}"
-								        HorizontalAlignment="Stretch"
-								        Command="{Binding SetThemeCommand}" CommandParameter="system"/>
+						<ScrollViewer IsVisible="{Binding IsSettingsView}" VerticalScrollBarVisibility="Auto">
+							<StackPanel Spacing="12" Margin="0,0,4,0">
+								<TextBlock Text="НАСТРОЙКИ" FontSize="11" FontWeight="Bold"
+								           Foreground="{DynamicResource TextMuted}" Margin="6,0"/>
+								<TextBlock Text="Тема оформления" FontSize="12"
+								           Foreground="{DynamicResource TextMuted}" Margin="6,4,0,0"/>
+								<StackPanel Spacing="6">
+									<Button Content="Тёмная (чёрная)" Classes="pill" Classes.active="{Binding IsDarkTheme}"
+									        HorizontalAlignment="Stretch"
+									        Command="{Binding SetThemeCommand}" CommandParameter="dark"/>
+									<Button Content="Светлая" Classes="pill" Classes.active="{Binding IsLightTheme}"
+									        HorizontalAlignment="Stretch"
+									        Command="{Binding SetThemeCommand}" CommandParameter="light"/>
+									<Button Content="Как в системе" Classes="pill" Classes.active="{Binding IsSystemTheme}"
+									        HorizontalAlignment="Stretch"
+									        Command="{Binding SetThemeCommand}" CommandParameter="system"/>
+								</StackPanel>
+								<Border Height="1" Background="{DynamicResource Border}" Margin="6,8"/>
+								<TextBlock Text="Сообщения шифруются AES-256 перед отправкой в Firebase. Обновления приходят мгновенно (поток RTDB)."
+								           FontSize="11" Foreground="{DynamicResource TextMuted}"
+								           TextWrapping="Wrap" Margin="6,0"/>
+
+								<Border Height="1" Background="{DynamicResource Border}" Margin="6,8"/>
+								<TextBlock Text="ОПАСНАЯ ЗОНА" FontSize="11" FontWeight="Bold"
+								           Foreground="{DynamicResource Danger}" Margin="6,0"/>
+
+								<Button Content="Удалить аккаунт" Classes="danger" HorizontalAlignment="Stretch"
+								        IsVisible="{Binding !IsDeleteConfirm}"
+								        Command="{Binding AskDeleteAccountCommand}"/>
+
+								<StackPanel Spacing="6" IsVisible="{Binding IsDeleteConfirm}">
+									<TextBlock Text="Профиль, ник и аккаунт Firebase будут удалены безвозвратно. Ник освободится. Переписка останется у собеседника."
+									           FontSize="11" Foreground="{DynamicResource TextMuted}"
+									           TextWrapping="Wrap" Margin="6,0"/>
+									<Button Content="Да, удалить навсегда" Classes="danger"
+									        HorizontalAlignment="Stretch"
+									        Command="{Binding DeleteAccountCommand}"/>
+									<Button Content="Отмена" HorizontalAlignment="Stretch"
+									        Command="{Binding CancelDeleteAccountCommand}"/>
+								</StackPanel>
 							</StackPanel>
-							<Border Height="1" Background="{DynamicResource Border}" Margin="6,8"/>
-							<TextBlock Text="Сообщения шифруются AES-256 перед отправкой в Firebase."
-							           FontSize="11" Foreground="{DynamicResource TextMuted}"
-							           TextWrapping="Wrap" Margin="6,0"/>
-						</StackPanel>
+						</ScrollViewer>
 					</Grid>
 
 					<!-- ПЕРЕКЛЮЧАТЕЛЬ ВНИЗУ: К/ЛС ↔ АККАУНТ/НАСТРОЙКИ -->

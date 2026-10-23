@@ -2,12 +2,14 @@ namespace uqoz.Firebase
 
 open System
 open System.Collections.Generic
+open System.IO
 open System.Net
 open System.Net.Http
 open System.Security.Cryptography
 open System.Text
 open System.Text.Json
 open System.Text.Json.Nodes
+open System.Threading
 open System.Threading.Tasks
 open uqoz.Crypto
 
@@ -332,19 +334,30 @@ type FirebaseClient(apiKey: string, dbUrl: string) =
                 let withNick = { auth with Nick = cleanNick }
                 session <- Some withNick
 
-                try
-                    // Ник должен быть свободен. Сначала проверяем, потом пишем;
-                    // правила базы дополнительно запрещают перезапись (data.exists()).
-                    let! existingNick = this.DbAsync("nicks/" + cleanNick, HttpMethod.Get, None)
+                let rollback (message: string) : Task<Result<Session, string>> = task {
+                    do! this.DeleteAccountAsync withNick.IdToken
+                    session <- None
+                    return Result.Error message
+                }
 
-                    if not (String.IsNullOrWhiteSpace existingNick)
-                       && existingNick.Trim() <> "null" then
-                        do! this.DeleteAccountAsync withNick.IdToken
-                        session <- None
-                        return Result.Error "Этот ник уже занят"
-                    else
-                        let nickPayload = Json.escape withNick.Uid
-                        let! _ = this.DbAsync("nicks/" + cleanNick, HttpMethod.Put, Some nickPayload)
+                let! existing =
+                    task {
+                        try
+                            let! value = this.DbAsync("nicks/" + cleanNick, HttpMethod.Get, None)
+                            return Ok(not (String.IsNullOrWhiteSpace value) && value.Trim() <> "null")
+                        with ex -> return Result.Error ex.Message
+                    }
+
+                match existing with
+                | Result.Error message ->
+                    // База не ответила: закрытые правила или нет сети.
+                    return! rollback ("Не удалось проверить ник: " + message)
+                | Ok true -> return! rollback "Этот ник уже занят"
+                | Ok false ->
+                    try
+                        // Ник закрепляем за uid: правило базы не даст перезаписать занятый.
+                        let! _ =
+                            this.DbAsync("nicks/" + cleanNick, HttpMethod.Put, Some(Json.escape withNick.Uid))
 
                         let profile = JsonObject()
                         profile["nick"] <- JsonValue.Create cleanNick
@@ -360,11 +373,8 @@ type FirebaseClient(apiKey: string, dbUrl: string) =
                             )
 
                         return Ok withNick
-                with _ ->
-                    // Ник занят или правила не пустили — откатываем аккаунт.
-                    do! this.DeleteAccountAsync withNick.IdToken
-                    session <- None
-                    return Result.Error "Этот ник уже занят"
+                    with ex ->
+                        return! rollback ("Не удалось создать профиль: " + ex.Message)
     }
 
     member this.SignInAsync(email: string, password: string) : Task<Result<Session, string>> = task {
@@ -416,33 +426,62 @@ type FirebaseClient(apiKey: string, dbUrl: string) =
 
     // --- users --------------------------------------------------------------
 
-    member this.UsersAsync() : Task<UserProfile list> = task {
-        let! raw = this.DbAsync("users", HttpMethod.Get, None)
-
+    /// Разбор узла users — общий для REST-запроса и для потока.
+    member this.ParseUsers(raw: string) : UserProfile list =
         if String.IsNullOrWhiteSpace raw || raw.Trim() = "null" then
-            return []
+            []
         else
             use doc = JsonDocument.Parse raw
 
             match doc.RootElement.ValueKind with
             | JsonValueKind.Object ->
-                return
-                    doc.RootElement.EnumerateObject()
-                    |> Seq.choose (fun property ->
-                        let node = property.Value
-                        if node.ValueKind <> JsonValueKind.Object then
-                            None
-                        else
-                            let nick = Json.str node "nick"
-                            Some {
-                                Uid = property.Name
-                                Nick = (if nick = "" then property.Name else nick)
-                                Email = Json.str node "email"
-                                Avatar = Json.str node "avatar"
-                            })
-                    |> Seq.sortBy (fun u -> u.Nick)
-                    |> Seq.toList
-            | _ -> return []
+                doc.RootElement.EnumerateObject()
+                |> Seq.choose (fun property ->
+                    let node = property.Value
+                    if node.ValueKind <> JsonValueKind.Object then
+                        None
+                    else
+                        let nick = Json.str node "nick"
+                        Some {
+                            Uid = property.Name
+                            Nick = (if nick = "" then property.Name else nick)
+                            Email = Json.str node "email"
+                            Avatar = Json.str node "avatar"
+                        })
+                |> Seq.sortBy (fun u -> u.Nick)
+                |> Seq.toList
+            | _ -> []
+
+    member this.UsersAsync() : Task<UserProfile list> = task {
+        let! raw = this.DbAsync("users", HttpMethod.Get, None)
+        return this.ParseUsers raw
+    }
+
+    /// Удаление своего аккаунта: освобождает ник, стирает профиль
+    /// и удаляет пользователя в Firebase Authentication.
+    member this.DeleteMyAccountAsync() : Task<Result<unit, string>> = task {
+        match session with
+        | None -> return Result.Error "Вы не вошли в аккаунт"
+        | Some current ->
+            try
+                // Ник освобождаем первым: после accounts:delete токен уже недействителен.
+                if not (String.IsNullOrWhiteSpace current.Nick) then
+                    try
+                        let! _ = this.DbAsync("nicks/" + current.Nick, HttpMethod.Delete, None)
+                        ()
+                    with ex ->
+                        System.Diagnostics.Debug.WriteLine("nick release: " + ex.Message)
+
+                try
+                    let! _ = this.DbAsync("users/" + current.Uid, HttpMethod.Delete, None)
+                    ()
+                with ex ->
+                    System.Diagnostics.Debug.WriteLine("profile delete: " + ex.Message)
+
+                do! this.DeleteAccountAsync current.IdToken
+                session <- None
+                return Ok()
+            with ex -> return Result.Error("Не удалось удалить аккаунт: " + ex.Message)
     }
 
     // --- chats --------------------------------------------------------------
@@ -483,49 +522,158 @@ type FirebaseClient(apiKey: string, dbUrl: string) =
                 return Result.Error ex.Message
     }
 
-    member this.HistoryAsync(peerUid: string) : Task<ChatMessage list> = task {
-        let chat = this.ChatIdWith peerUid
-        let! raw = this.DbAsync("messages/" + chat, HttpMethod.Get, None)
-
+    /// Разбор узла messages/{chatId} — общий для REST-запроса и для потока.
+    member this.ParseMessages(peerUid: string, raw: string) : ChatMessage list =
         if String.IsNullOrWhiteSpace raw || raw.Trim() = "null" then
-            return []
+            []
         else
             use doc = JsonDocument.Parse raw
 
             match doc.RootElement.ValueKind with
             | JsonValueKind.Object ->
-                let key = this.ChatKey chat
+                let key = this.ChatKey(this.ChatIdWith peerUid)
 
-                return
-                    doc.RootElement.EnumerateObject()
-                    |> Seq.choose (fun property ->
-                        let node = property.Value
-                        if node.ValueKind <> JsonValueKind.Object then
-                            None
-                        else
-                            try
-                                let ts =
-                                    DateTimeOffset
-                                        .FromUnixTimeMilliseconds(Json.number node "ts")
-                                        .LocalDateTime
+                doc.RootElement.EnumerateObject()
+                |> Seq.choose (fun property ->
+                    let node = property.Value
+                    if node.ValueKind <> JsonValueKind.Object then
+                        None
+                    else
+                        try
+                            let ts =
+                                DateTimeOffset
+                                    .FromUnixTimeMilliseconds(Json.number node "ts")
+                                    .LocalDateTime
 
-                                let cipher = Json.str node "cipher"
-                                let iv = Json.str node "iv"
+                            let cipher = Json.str node "cipher"
+                            let iv = Json.str node "iv"
 
-                                let text =
-                                    try
-                                        CryptoService.Decrypt cipher key (Convert.FromBase64String iv)
-                                    with _ -> "[не удалось расшифровать]"
+                            let text =
+                                try
+                                    CryptoService.Decrypt cipher key (Convert.FromBase64String iv)
+                                with _ -> "[не удалось расшифровать]"
 
-                                Some {
-                                    Id = property.Name
-                                    FromUid = Json.str node "from"
-                                    FromNick = Json.str node "fromNick"
-                                    Text = text
-                                    Timestamp = ts
-                                }
-                            with _ -> None)
-                    |> Seq.sortBy (fun m -> m.Timestamp)
-                    |> Seq.toList
-            | _ -> return []
+                            Some {
+                                Id = property.Name
+                                FromUid = Json.str node "from"
+                                FromNick = Json.str node "fromNick"
+                                Text = text
+                                Timestamp = ts
+                            }
+                        with _ -> None)
+                |> Seq.sortBy (fun m -> m.Timestamp)
+                |> Seq.toList
+            | _ -> []
+
+    member this.HistoryAsync(peerUid: string) : Task<ChatMessage list> = task {
+        let! raw = this.DbAsync("messages/" + this.ChatIdWith peerUid, HttpMethod.Get, None)
+        return this.ParseMessages(peerUid, raw)
     }
+
+    // --- realtime (Server-Sent Events) ---------------------------------------
+
+    /// Сливает событие с накопленным состоянием узла:
+    /// put заменяет узел целиком, patch меняет отдельные ключи.
+    static member private Merge(state: JsonNode, eventName: string, data: string) : JsonNode =
+        let trimmed = data.Trim()
+
+        if trimmed = "" then
+            state
+        elif eventName = "put" then
+            if trimmed = "null" then null else JsonNode.Parse trimmed
+        elif eventName = "patch" then
+            match state, JsonNode.Parse trimmed with
+            | (:? JsonObject as current), (:? JsonObject as changes) ->
+                for pair in changes do
+                    current[pair.Key] <-
+                        (if isNull pair.Value then null else pair.Value.DeepClone())
+
+                current
+            | _ -> state
+        else
+            state
+
+    /// Держит поток узла открытым и отдаёт его состояние при каждом изменении.
+    /// Работает до отмены ct; при обрыве и истечении токена переподключается.
+    member this.WatchNodeAsync(path: string, onJson: string -> unit, ct: CancellationToken) : Task = task {
+        let mutable attempt = 0
+        let mutable running = true
+
+        while running && not ct.IsCancellationRequested do
+            try
+                let! token = this.EnsureTokenAsync()
+
+                let url =
+                    sprintf "%s/%s.json?auth=%s" root (path.Trim '/') (Uri.EscapeDataString token)
+
+                use request = new HttpRequestMessage(HttpMethod.Get, url)
+                request.Headers.Accept.ParseAdd "text/event-stream"
+
+                use streamClient = new HttpClient(Timeout = System.Threading.Timeout.InfiniteTimeSpan)
+
+                use! response =
+                    streamClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct)
+
+                if not response.IsSuccessStatusCode then
+                    attempt <- attempt + 1
+                    do! Task.Delay(TimeSpan.FromSeconds(float (min 15 (attempt * 2))), ct)
+                else
+                    attempt <- 0
+                    use! netStream = response.Content.ReadAsStreamAsync ct
+                    use reader = new StreamReader(netStream)
+
+                    let mutable state: JsonNode = null
+                    let mutable eventName = ""
+                    let mutable buffer = StringBuilder()
+                    let mutable alive = true
+
+                    while alive && not ct.IsCancellationRequested do
+                        let! line = reader.ReadLineAsync ct
+
+                        if isNull line then
+                            alive <- false
+                        elif line.Length = 0 then
+                            // Пустая строка — конец события.
+                            let payload = buffer.ToString()
+                            buffer.Clear() |> ignore
+
+                            if eventName = "put" || eventName = "patch" then
+                                state <- FirebaseClient.Merge(state, eventName, payload)
+                                onJson(if isNull state then "null" else state.ToJsonString())
+                            elif eventName = "cancel" then
+                                // Токен истёк или доступ отозван — переподключимся с новым.
+                                session <-
+                                    session
+                                    |> Option.map (fun current -> { current with ExpiresAt = DateTime.MinValue })
+
+                                alive <- false
+
+                            eventName <- ""
+                        elif line.StartsWith "event:" then
+                            eventName <- line.Substring(6).Trim()
+                        elif line.StartsWith "data:" then
+                            if buffer.Length > 0 then buffer.Append('\n') |> ignore
+                            buffer.Append(line.Substring(5).Trim()) |> ignore
+
+                    if not ct.IsCancellationRequested then
+                        do! Task.Delay(TimeSpan.FromSeconds 1.0, ct)
+            with
+            | :? OperationCanceledException -> running <- false
+            | _ ->
+                attempt <- attempt + 1
+
+                if not ct.IsCancellationRequested then
+                    do! Task.Delay(TimeSpan.FromSeconds(float (min 15 (attempt * 2))), ct)
+    }
+
+    /// Переписка с собеседником в реальном времени.
+    member this.WatchChatAsync(peerUid: string, onMessages: ChatMessage list -> unit, ct: CancellationToken) : Task =
+        this.WatchNodeAsync(
+            "messages/" + this.ChatIdWith peerUid,
+            (fun json -> onMessages(this.ParseMessages(peerUid, json))),
+            ct
+        )
+
+    /// Список пользователей в реальном времени.
+    member this.WatchUsersAsync(onUsers: UserProfile list -> unit, ct: CancellationToken) : Task =
+        this.WatchNodeAsync("users", (fun json -> onUsers(this.ParseUsers json)), ct)
