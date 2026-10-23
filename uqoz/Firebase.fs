@@ -572,34 +572,80 @@ type FirebaseClient(apiKey: string, dbUrl: string) =
 
     // --- realtime (Server-Sent Events) ---------------------------------------
 
-    /// Сливает событие с накопленным состоянием узла:
-    /// put заменяет узел целиком, patch меняет отдельные ключи.
-    static member private Merge(state: JsonNode, eventName: string, data: string) : JsonNode =
+    /// Объект по пути внутри узла; недостающие промежуточные узлы создаются.
+    static member private NodeAt(root: JsonObject, segments: string[]) : JsonObject =
+        let mutable current = root
+
+        for segment in segments do
+            match current[segment] with
+            | :? JsonObject as child -> current <- child
+            | _ ->
+                let child = JsonObject()
+                current[segment] <- child
+                current <- child
+
+        current
+
+    /// Применяет событие SSE к накопленному состоянию узла.
+    /// Firebase присылает конверт {"path":"/","data":...}:
+    /// put заменяет значение по пути, patch меняет отдельные ключи.
+    static member private ApplyEvent(root: JsonObject, eventName: string, data: string) : JsonObject =
         let trimmed = data.Trim()
 
         if trimmed = "" then
-            state
-        elif eventName = "put" then
-            if trimmed = "null" then null else JsonNode.Parse trimmed
-        elif eventName = "patch" then
-            match state, JsonNode.Parse trimmed with
-            | (:? JsonObject as current), (:? JsonObject as changes) ->
-                for pair in changes do
-                    current[pair.Key] <-
-                        (if isNull pair.Value then null else pair.Value.DeepClone())
-
-                current
-            | _ -> state
+            root
         else
-            state
+            match JsonNode.Parse trimmed with
+            | :? JsonObject as envelope ->
+                let path =
+                    match envelope["path"] with
+                    | :? JsonValue as value ->
+                        match value.TryGetValue<string>() with
+                        | true, text when not (String.IsNullOrWhiteSpace text) -> text
+                        | _ -> "/"
+                    | _ -> "/"
 
-    /// Держит поток узла открытым и отдаёт его состояние при каждом изменении.
-    /// Работает до отмены ct; при обрыве и истечении токена переподключается.
-    member this.WatchNodeAsync(path: string, onJson: string -> unit, ct: CancellationToken) : Task = task {
-        let mutable attempt = 0
-        let mutable running = true
+                let payload = envelope["data"]
+                let segments = path.Split('/', StringSplitOptions.RemoveEmptyEntries)
 
-        while running && not ct.IsCancellationRequested do
+                match eventName with
+                | "put" when segments.Length = 0 ->
+                    // Весь узел целиком: отдаём новую копию.
+                    match payload with
+                    | :? JsonObject as fresh -> fresh.DeepClone() :?> JsonObject
+                    | _ -> JsonObject()
+                | "put" ->
+                    let parent = FirebaseClient.NodeAt(root, segments.[0 .. segments.Length - 2])
+                    let last = segments.[segments.Length - 1]
+
+                    if isNull payload then
+                        parent.Remove last |> ignore
+                    else
+                        parent[last] <- payload.DeepClone()
+
+                    root
+                | "patch" ->
+                    let parent = FirebaseClient.NodeAt(root, segments)
+
+                    match payload with
+                    | :? JsonObject as changes ->
+                        for pair in changes do
+                            if isNull pair.Value then
+                                parent.Remove pair.Key |> ignore
+                            else
+                                parent[pair.Key] <- pair.Value.DeepClone()
+                    | _ -> ()
+
+                    root
+                | _ -> root
+            | _ -> root
+
+    /// Одно подключение к потоку узла. Исключения не пробрасываются:
+    /// внешний цикл сам решает, когда переподключаться.
+    member private this.StreamOnceAsync
+        (path: string, onJson: string -> unit, ct: CancellationToken)
+        : Task<exn option> =
+        task {
             try
                 let! token = this.EnsureTokenAsync()
 
@@ -611,18 +657,19 @@ type FirebaseClient(apiKey: string, dbUrl: string) =
 
                 use streamClient = new HttpClient(Timeout = System.Threading.Timeout.InfiniteTimeSpan)
 
-                use! response =
+                let! response =
                     streamClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct)
 
+                use response = response
+
                 if not response.IsSuccessStatusCode then
-                    attempt <- attempt + 1
-                    do! Task.Delay(TimeSpan.FromSeconds(float (min 15 (attempt * 2))), ct)
+                    return Some(Exception(sprintf "поток: HTTP %d" (int response.StatusCode)))
                 else
-                    attempt <- 0
-                    use! netStream = response.Content.ReadAsStreamAsync ct
+                    let! netStream = response.Content.ReadAsStreamAsync ct
+                    use netStream = netStream
                     use reader = new StreamReader(netStream)
 
-                    let mutable state: JsonNode = null
+                    let mutable state = JsonObject()
                     let mutable eventName = ""
                     let mutable buffer = StringBuilder()
                     let mutable alive = true
@@ -638,8 +685,8 @@ type FirebaseClient(apiKey: string, dbUrl: string) =
                             buffer.Clear() |> ignore
 
                             if eventName = "put" || eventName = "patch" then
-                                state <- FirebaseClient.Merge(state, eventName, payload)
-                                onJson(if isNull state then "null" else state.ToJsonString())
+                                state <- FirebaseClient.ApplyEvent(state, eventName, payload)
+                                onJson(state.ToJsonString())
                             elif eventName = "cancel" then
                                 // Токен истёк или доступ отозван — переподключимся с новым.
                                 session <-
@@ -655,25 +702,48 @@ type FirebaseClient(apiKey: string, dbUrl: string) =
                             if buffer.Length > 0 then buffer.Append('\n') |> ignore
                             buffer.Append(line.Substring(5).Trim()) |> ignore
 
-                    if not ct.IsCancellationRequested then
-                        do! Task.Delay(TimeSpan.FromSeconds 1.0, ct)
+                    return None
             with
-            | :? OperationCanceledException -> running <- false
-            | _ ->
-                attempt <- attempt + 1
+            | :? OperationCanceledException when ct.IsCancellationRequested -> return None
+            | ex -> return Some ex
+        }
+
+    /// Держит поток узла открытым и отдаёт его состояние при каждом изменении.
+    /// Работает до отмены ct; при обрыве переподключается с нарастающей паузой.
+    member this.WatchNodeAsync
+        (path: string, onJson: string -> unit, ct: CancellationToken, ?onError: exn -> unit)
+        : Task =
+        task {
+            let report = defaultArg onError ignore
+            let mutable attempt = 0
+
+            while not ct.IsCancellationRequested do
+                let! error = this.StreamOnceAsync(path, onJson, ct)
 
                 if not ct.IsCancellationRequested then
-                    do! Task.Delay(TimeSpan.FromSeconds(float (min 15 (attempt * 2))), ct)
-    }
+                    match error with
+                    | None ->
+                        attempt <- 0
+                        do! Task.Delay(TimeSpan.FromSeconds 1.0, ct)
+                    | Some ex ->
+                        attempt <- attempt + 1
+                        report ex
+                        do! Task.Delay(TimeSpan.FromSeconds(float (min 15 (attempt * 2))), ct)
+        }
 
     /// Переписка с собеседником в реальном времени.
-    member this.WatchChatAsync(peerUid: string, onMessages: ChatMessage list -> unit, ct: CancellationToken) : Task =
+    member this.WatchChatAsync
+        (peerUid: string, onMessages: ChatMessage list -> unit, ct: CancellationToken, ?onError: exn -> unit)
+        : Task =
         this.WatchNodeAsync(
             "messages/" + this.ChatIdWith peerUid,
             (fun json -> onMessages(this.ParseMessages(peerUid, json))),
-            ct
+            ct,
+            ?onError = onError
         )
 
     /// Список пользователей в реальном времени.
-    member this.WatchUsersAsync(onUsers: UserProfile list -> unit, ct: CancellationToken) : Task =
-        this.WatchNodeAsync("users", (fun json -> onUsers(this.ParseUsers json)), ct)
+    member this.WatchUsersAsync
+        (onUsers: UserProfile list -> unit, ct: CancellationToken, ?onError: exn -> unit)
+        : Task =
+        this.WatchNodeAsync("users", (fun json -> onUsers(this.ParseUsers json)), ct, ?onError = onError)

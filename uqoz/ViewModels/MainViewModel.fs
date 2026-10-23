@@ -269,10 +269,14 @@ type MainViewModel() as this =
                         Dispatcher.UIThread.Post(fun () ->
                             if not source.IsCancellationRequested then
                                 this.ApplyMessages list)),
-                    source.Token
+                    source.Token,
+                    onError =
+                        (fun error ->
+                            Dispatcher.UIThread.Post(fun () ->
+                                this.LastError <- "Поток сообщений: " + error.Message))
                 )
                 .ContinueWith(fun (finished: Task) ->
-                    if finished.IsFaulted then
+                    if finished.IsFaulted && not source.IsCancellationRequested then
                         Dispatcher.UIThread.Post(fun () ->
                             this.LastError <-
                                 "Поток сообщений: "
@@ -298,10 +302,14 @@ type MainViewModel() as this =
                         Dispatcher.UIThread.Post(fun () ->
                             if not source.IsCancellationRequested then
                                 this.ApplyUsers users)),
-                    source.Token
+                    source.Token,
+                    onError =
+                        (fun error ->
+                            Dispatcher.UIThread.Post(fun () ->
+                                this.LastError <- "Список пользователей: " + error.Message))
                 )
                 .ContinueWith(fun (finished: Task) ->
-                    if finished.IsFaulted then
+                    if finished.IsFaulted && not source.IsCancellationRequested then
                         Dispatcher.UIThread.Post(fun () ->
                             this.LastError <-
                                 "Список пользователей: "
