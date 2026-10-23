@@ -13,6 +13,7 @@
   <ItemGroup>
     <!-- Базовые сервисы и БД -->
     <Compile Include="Crypto.fs" />
+    <Compile Include="Firebase.fs" />
     <Compile Include="Db.fs" />
     <Compile Include="AuthService.fs" />
     <Compile Include="FriendService.fs" />
