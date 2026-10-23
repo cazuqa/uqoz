@@ -62,7 +62,7 @@ Firebase Console → **Authentication → Sign-in method → Email/Password → 
     "nicks": {
       ".read": "auth != null",
       "$nick": {
-        ".write": "auth != null && !data.exists() && newData.val() == auth.uid"
+        ".write": "auth != null && ((!data.exists() && newData.val() == auth.uid) || (data.val() == auth.uid && !newData.exists()))"
       }
     },
     "messages": {
