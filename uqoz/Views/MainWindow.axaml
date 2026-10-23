@@ -1,0 +1,144 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="clr-namespace:uqoz.ViewModels"
+        x:Class="uqoz.Views.MainWindow"
+        x:DataType="vm:MainViewModel"
+        Title="uqoz"
+        Width="1050" Height="680"
+        WindowStartupLocation="CenterScreen"
+        Background="#1E1F22">
+
+	<Window.DataContext>
+		<vm:MainViewModel/>
+	</Window.DataContext>
+
+	<Grid>
+		<!-- ЭКРАН 1: АВТОРИЗАЦИЯ / РЕГИСТРАЦИЯ -->
+		<Grid IsVisible="{Binding !IsLoggedIn}" HorizontalAlignment="Center" VerticalAlignment="Center">
+			<Border Background="#2B2D31" CornerRadius="12" Padding="30" Width="380">
+				<StackPanel Spacing="15">
+					<TextBlock Text="uqoz" FontSize="26" FontWeight="Bold" HorizontalAlignment="Center" Foreground="#5865F2"/>
+					<TextBlock Text="Вход в аккаунт" FontSize="14" Foreground="#B5BAC1" HorizontalAlignment="Center"/>
+
+					<TextBox Watermark="Email" Text="{Binding AuthEmail}" Background="#1E1F22" CornerRadius="6" Padding="10"/>
+					<TextBox Watermark="Пароль" PasswordChar="*" Text="{Binding AuthPassword}" Background="#1E1F22" CornerRadius="6" Padding="10"/>
+
+					<Button Content="Войти / Зарегистрироваться" Command="{Binding LoginCommand}"
+                            HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"
+                            Background="#5865F2" Foreground="White" Padding="10" CornerRadius="6" FontWeight="Bold"/>
+
+					<TextBlock Text="{Binding AuthErrorText}" Foreground="#F23F43" HorizontalAlignment="Center" TextWrapping="Wrap"/>
+				</StackPanel>
+			</Border>
+		</Grid>
+
+		<!-- ЭКРАН 2: ОСНОВНОЙ ИНТЕРФЕЙС МЕССЕНДЖЕРА -->
+		<Grid IsVisible="{Binding IsLoggedIn}" ColumnDefinitions="260, *, 300">
+
+			<!-- ЛЕВАЯ ПАНЕЛЬ: ЧАТЫ -->
+			<Grid Grid.Column="0" RowDefinitions="*, Auto" Background="#2B2D31">
+				<ScrollViewer Grid.Row="0" Margin="10">
+					<StackPanel Spacing="5">
+						<TextBlock Text="ЛИЧНЫЕ СООБЩЕНИЯ" FontSize="11" FontWeight="Bold" Foreground="#949BA4" Margin="5,5,5,10"/>
+
+						<!-- Список чатов с привязкой -->
+						<Button Content="банда ишаков" Command="{Binding SelectChatCommand}" CommandParameter="banda" HorizontalAlignment="Stretch" CornerRadius="6"/>
+						<Button Content="ишак" Command="{Binding SelectChatCommand}" CommandParameter="ishak" HorizontalAlignment="Stretch" CornerRadius="6"/>
+						<Button Content="брат ишака" Command="{Binding SelectChatCommand}" CommandParameter="brother" HorizontalAlignment="Stretch" CornerRadius="6"/>
+					</StackPanel>
+				</ScrollViewer>
+
+				<!-- Нижная переключаемая панель -->
+				<Border Grid.Row="1" Background="#232428" Padding="10" CornerRadius="12" Margin="8">
+					<Grid RowDefinitions="Auto, Auto">
+						<!-- Стрелка-переключатель с иконкой -->
+						<Button Grid.Row="0" Command="{Binding ToggleBottomPanelCommand}"
+                                ToolTip.Tip="Переключить панель (К/ЛС или Настройки)"
+                                HorizontalAlignment="Center" Background="Transparent" Padding="6,2" Margin="0,0,0,5">
+							<PathIcon Data="M7.41,15.41L12,10.83L16.59,15.41L18,14L12,8L6,14L7.41,15.41Z" Width="14" Height="14"/>
+						</Button>
+
+						<!-- Режим 1: Переключение К / ЛС -->
+						<StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Center" Spacing="8" IsVisible="{Binding IsTabMode}">
+							<Button Content="К" Command="{Binding SelectTabCommand}" CommandParameter="Channels" ToolTip.Tip="Каналы" Width="42" HorizontalContentAlignment="Center"/>
+							<Button Content="ЛС" Command="{Binding SelectTabCommand}" CommandParameter="DM" ToolTip.Tip="Личные сообщения" Width="52" HorizontalContentAlignment="Center" Background="#5865F2"/>
+						</StackPanel>
+
+						<!-- Режим 2: Аккаунт и Настройки -->
+						<Grid Grid.Row="1" ColumnDefinitions="*, Auto" IsVisible="{Binding !IsTabMode}">
+							<Button Grid.Column="0" Content="Мой аккаунт" ToolTip.Tip="Профиль пользователя" HorizontalAlignment="Stretch" Margin="0,0,5,0"/>
+							<Button Grid.Column="1" ToolTip.Tip="Настройки" Width="36" HorizontalContentAlignment="Center">
+								<PathIcon Data="M12,15.5A3.5,3.5 0 0,1 8.5,12A3.5,3.5 0 0,1 12,8.5A3.5,3.5 0 0,1 15.5,12A3.5,3.5 0 0,1 12,15.5M19.43,12.97C19.47,12.65 19.5,12.33 19.5,12C19.5,11.67 19.47,11.34 19.43,11L21.54,9.37C21.73,9.22 21.78,8.95 21.66,8.73L19.66,5.27C19.54,5.05 19.27,4.96 19.05,5.05L16.56,6.05C16.04,5.66 15.5,5.32 14.87,5.07L14.49,2.42C14.46,2.18 14.25,2 14,2H10C9.75,2 9.54,2.18 9.51,2.42L9.13,5.07C8.5,5.32 7.96,5.66 7.44,6.05L4.95,5.05C4.73,4.96 4.46,5.05 4.34,5.27L2.34,8.73C2.21,8.95 2.27,9.22 2.46,9.37L4.57,11C4.53,11.34 4.5,11.67 4.5,12C4.5,12.33 4.53,12.65 4.57,12.97L2.46,14.63C2.27,14.78 2.21,15.05 2.34,15.27L4.34,18.73C4.46,18.95 4.73,19.03 4.95,18.95L7.44,17.94C7.96,18.34 8.5,18.68 9.13,18.93L9.51,21.58C9.54,21.82 9.75,22 10,22H14C14.25,22 14.46,21.82 14.49,21.58L14.87,18.93C15.5,18.68 16.04,18.34 16.56,17.94L19.05,18.95C19.27,19.03 19.54,18.95 19.66,18.73L21.66,15.27C21.78,15.05 21.73,14.78 21.54,14.63L19.43,12.97Z" Width="16" Height="16"/>
+							</Button>
+						</Grid>
+					</Grid>
+				</Border>
+			</Grid>
+
+			<!-- ЦЕНТРАЛЬНАЯ ЗОНА: СООБЩЕНИЯ ЧАТА -->
+			<Grid Grid.Column="1" RowDefinitions="Auto, *, Auto" Background="#313338">
+				<Border Grid.Row="0" Background="#2B2D31" Padding="15,12">
+					<TextBlock Text="{Binding ActiveChatTitle}" FontWeight="Bold" FontSize="16"/>
+				</Border>
+
+				<!-- Список зашифрованных сообщений -->
+				<ListBox Grid.Row="1" ItemsSource="{Binding Messages}" Background="Transparent" Margin="10">
+					<ListBox.ItemTemplate>
+						<DataTemplate>
+							<StackPanel Margin="0,4">
+								<TextBlock Text="{Binding Sender}" FontSize="12" FontWeight="Bold" Foreground="#5865F2"/>
+								<TextBlock Text="{Binding DecryptedText}" TextWrapping="Wrap" Foreground="White" Margin="0,2,0,0"/>
+							</StackPanel>
+						</DataTemplate>
+					</ListBox.ItemTemplate>
+				</ListBox>
+
+				<!-- Поле ввода с кнопкой отправки -->
+				<Border Grid.Row="2" Padding="10">
+					<Grid ColumnDefinitions="*, Auto">
+						<TextBox Grid.Column="0" Text="{Binding NewMessageText}" Watermark="Написать сообщение..."
+                                 Background="#383A40" BorderThickness="0" CornerRadius="8" Padding="10"/>
+						<Button Grid.Column="1" Command="{Binding SendMessageCommand}" ToolTip.Tip="Отправить (Encrypted)"
+                                Margin="8,0,0,0" Padding="10" Background="#5865F2" CornerRadius="8">
+							<PathIcon Data="M2,21L23,12L2,3V10L17,12L2,14V21Z" Width="16" Height="16"/>
+						</Button>
+					</Grid>
+				</Border>
+			</Grid>
+
+			<!-- ПРАВАЯ ПАНЕЛЬ: P2P ЗВОНОК И ИКОНКИ УПРАВЛЕНИЯ -->
+			<Grid Grid.Column="2" Background="#232428" RowDefinitions="*, Auto">
+				<StackPanel Grid.Row="0" VerticalAlignment="Center" HorizontalAlignment="Center" Spacing="15">
+
+					<!-- Карточка уведомления о входящем вызове -->
+					<Border IsVisible="{Binding HasIncomingCall}" Background="#2B2D31" CornerRadius="10" Padding="15" Margin="10">
+						<StackPanel Spacing="10">
+							<TextBlock Text="Входящий P2P звонок..." FontWeight="Bold" Foreground="#FEE75C" HorizontalAlignment="Center"/>
+							<StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Spacing="10">
+								<Button Content="Принять" Command="{Binding AcceptCallCommand}" Background="#23A55A" Padding="8,4" CornerRadius="6"/>
+								<Button Content="Отклонить" Command="{Binding RejectCallCommand}" Background="#DA373C" Padding="8,4" CornerRadius="6"/>
+							</StackPanel>
+						</StackPanel>
+					</Border>
+
+					<PathIcon Data="M12,15C13.66,15 15,13.66 15,12C15,10.34 13.66,9 12,9C10.34,9 9,10.34 9,12C9,13.66 10.34,15 12,15M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2Z" Width="48" Height="48" Foreground="#5865F2"/>
+					<TextBlock Text="{Binding StatusText}" Foreground="#B5BAC1" HorizontalAlignment="Center"/>
+					<Button Content=" Позвонить" Command="{Binding StartCallCommand}" Background="#23A55A" CornerRadius="6" Padding="10,6"/>
+				</StackPanel>
+
+				<!-- Нижние кнопки звонка только с иконками -->
+				<StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Center" Spacing="12" Margin="15">
+					<Button Command="{Binding ToggleMuteCommand}" ToolTip.Tip="Включить/Выключить микрофон" Padding="12" CornerRadius="20">
+						<PathIcon Data="M12,2A3,3 0 0,0 9,5V11A3,3 0 0,0 12,14A3,3 0 0,0 15,11V5A3,3 0 0,0 12,2Z" Width="18" Height="18"/>
+					</Button>
+					<Button Command="{Binding ToggleScreenShareCommand}" ToolTip.Tip="Демонстрация экрана" Padding="12" CornerRadius="20">
+						<PathIcon Data="M21,16H3V4H21M21,2H3C1.89,2 1,2.89 1,4V16A2,2 0 0,0 3,18H10V20H8V22H16V20H14V18H21A2,2 0 0,0 23,16V4C23,2.89 22.1,2 21,2Z" Width="18" Height="18"/>
+					</Button>
+					<Button Command="{Binding EndCallCommand}" ToolTip.Tip="Завершить вызов" Background="#DA373C" Padding="12" CornerRadius="20">
+						<PathIcon Data="M12,9C10.4,9 8.85,9.25 7.4,9.72V12.82C7.4,13.22 7.17,13.56 6.84,13.72C5.86,14.21 4.96,14.82 4.16,15.5C3.96,15.7 3.7,15.8 3.42,15.8C3.14,15.8 2.88,15.7 2.68,15.5L0.88,13.7C0.68,13.5 0.58,13.24 0.58,12.96C0.58,12.68 0.68,12.42 0.88,12.22C3.88,9.36 7.8,7.5 12,7.5C16.2,7.5 20.12,9.36 23.12,12.22C23.32,12.42 23.42,12.68 23.42,12.96C23.42,13.24 23.32,13.5 23.12,13.7L21.32,15.5C21.12,15.7 20.86,15.8 20.58,15.8C20.3,15.8 20.04,15.7 19.84,15.5C19.04,14.82 18.14,14.21 17.16,13.72C16.83,13.56 16.6,13.22 16.6,12.82V9.72C15.15,9.25 13.6,9 12,9Z" Width="18" Height="18"/>
+					</Button>
+				</StackPanel>
+			</Grid>
+		</Grid>
+	</Grid>
+</Window>

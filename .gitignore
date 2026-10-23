@@ -1,0 +1,19 @@
+# build output
+bin/
+obj/
+.vs/
+
+# local database
+*.db
+*.db-shm
+*.db-wal
+
+# user/IDE files
+*.user
+*.suo
+*.userprefs
+
+# OS junk
+Thumbs.db
+desktop.ini
+.DS_Store
