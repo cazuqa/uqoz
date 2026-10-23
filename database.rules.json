@@ -1,0 +1,24 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+    "users": {
+      ".read": "auth != null",
+      "$uid": {
+        ".write": "auth != null && auth.uid == $uid"
+      }
+    },
+    "nicks": {
+      ".read": "auth != null",
+      "$nick": {
+        ".write": "auth != null && !data.exists() && newData.val() == auth.uid"
+      }
+    },
+    "messages": {
+      "$chatId": {
+        ".read": "auth != null && ($chatId.beginsWith(auth.uid + '__') || $chatId.endsWith('__' + auth.uid))",
+        ".write": "auth != null && ($chatId.beginsWith(auth.uid + '__') || $chatId.endsWith('__' + auth.uid))"
+      }
+    }
+  }
+}
