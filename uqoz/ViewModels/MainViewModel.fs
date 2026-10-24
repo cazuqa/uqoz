@@ -42,9 +42,17 @@ type MainViewModel() as this =
 
     // --- чаты ---
     let contacts = ObservableCollection<UserProfile>()
+    let visibleContacts = ObservableCollection<UserProfile>()
+    let mutable searchText = ""
+    let mutable chatListMode = "dm" // dm | friends
     let mutable selectedContact: UserProfile = Unchecked.defaultof<UserProfile>
     let mutable newMessageText = ""
     let messages = ObservableCollection<MessageItem>()
+
+    // --- участники текущего диалога ---
+    let participants = ObservableCollection<UserProfile>()
+    let visibleParticipants = ObservableCollection<UserProfile>()
+    let mutable participantSearch = ""
 
     // --- потоки (realtime) ---
     let mutable chatStream: CancellationTokenSource = null
@@ -90,28 +98,53 @@ type MainViewModel() as this =
 
     member private this.SetSidebarMode(mode: string) =
         sidebarMode <- mode
-        this.OnPropertyChanged "IsChannelsView"
         this.OnPropertyChanged "IsDmView"
         this.OnPropertyChanged "IsAccountView"
         this.OnPropertyChanged "IsSettingsView"
         this.OnPropertyChanged "IsTabMode"
         this.OnPropertyChanged "SidebarTitle"
 
-    member this.IsChannelsView = sidebarMode = "channels"
     member this.IsDmView = sidebarMode = "dm"
     member this.IsAccountView = sidebarMode = "account"
     member this.IsSettingsView = sidebarMode = "settings"
-    member this.IsTabMode = sidebarMode = "channels" || sidebarMode = "dm"
+
+    /// Каналы временно отключены: режим продуман не до конца,
+    /// поэтому из интерфейса они убраны.
+    member this.IsTabMode = sidebarMode = "dm"
 
     member this.SidebarTitle =
         match sidebarMode with
-        | "channels" -> "КАНАЛЫ"
         | "dm" -> "ЛИЧНЫЕ СООБЩЕНИЯ"
         | "account" -> "АККАУНТ"
         | _ -> "НАСТРОЙКИ"
 
-    member this.ShowChannelsCommand = RelayCommand(fun () -> this.SetSidebarMode "channels")
+    // внутри панели чатов: личные сообщения, друзья или каналы
+    member this.IsChatsMode = chatListMode = "dm"
+    member this.IsFriendsMode = chatListMode = "friends"
+    member this.IsChannelsMode = chatListMode = "channels"
+
+    member private this.SetChatListMode(mode: string) =
+        chatListMode <- mode
+        this.OnPropertyChanged "IsChatsMode"
+        this.OnPropertyChanged "IsFriendsMode"
+        this.OnPropertyChanged "IsChannelsMode"
+
     member this.ShowDmsCommand = RelayCommand(fun () -> this.SetSidebarMode "dm")
+    member this.ShowChatsCommand =
+        RelayCommand(fun () ->
+            this.SetSidebarMode "dm"
+            this.SetChatListMode "dm")
+    member this.ShowFriendsCommand =
+        RelayCommand(fun () ->
+            this.SetSidebarMode "dm"
+            this.SetChatListMode "friends")
+
+    /// Кнопка каналов на месте, но сами каналы пока выключены:
+    /// режим ещё не придуман, показываем заглушку.
+    member this.ShowChannelsCommand =
+        RelayCommand(fun () ->
+            this.SetSidebarMode "dm"
+            this.SetChatListMode "channels")
     member this.ShowAccountCommand = RelayCommand(fun () -> this.SetSidebarMode "account")
     member this.ShowSettingsCommand = RelayCommand(fun () -> this.SetSidebarMode "settings")
 
@@ -170,6 +203,77 @@ type MainViewModel() as this =
 
     member this.Contacts = contacts
 
+    /// Список с учётом строки поиска — его и показывает левая панель.
+    member this.VisibleContacts = visibleContacts
+
+    member this.SearchText
+        with get () = searchText
+        and set value =
+            if this.SetProperty(&searchText, value) then
+                this.RefreshVisibleContacts()
+
+    member private this.RefreshVisibleContacts() =
+        let query = searchText.Trim()
+
+        visibleContacts.Clear()
+
+        for user in contacts do
+            let matches =
+                query = ""
+                || user.Nick.Contains(query, StringComparison.OrdinalIgnoreCase)
+                || user.Email.Contains(query, StringComparison.OrdinalIgnoreCase)
+
+            if matches then
+                visibleContacts.Add user
+
+    // --- участники диалога ---
+
+    member this.Participants = participants
+    member this.VisibleParticipants = visibleParticipants
+
+    member this.ParticipantSearchText
+        with get () = participantSearch
+        and set value =
+            if this.SetProperty(&participantSearch, value) then
+                this.RefreshVisibleParticipants()
+
+    member this.HasParticipants = participants.Count > 0
+
+    member this.ParticipantsTitle =
+        if participants.Count = 0 then "УЧАСТНИКИ"
+        else sprintf "УЧАСТНИКИ · %d" participants.Count
+
+    member private this.RefreshVisibleParticipants() =
+        let query = participantSearch.Trim()
+
+        visibleParticipants.Clear()
+
+        for user in participants do
+            let matches =
+                query = ""
+                || user.Nick.Contains(query, StringComparison.OrdinalIgnoreCase)
+                || user.Email.Contains(query, StringComparison.OrdinalIgnoreCase)
+
+            if matches then
+                visibleParticipants.Add user
+
+    member private this.RefreshParticipants() =
+        participants.Clear()
+
+        if not (obj.ReferenceEquals(selectedContact, null)) then
+            participants.Add selectedContact
+
+            participants.Add(
+                { Uid = client.Uid
+                  Nick = (if String.IsNullOrWhiteSpace currentNick then "я" else currentNick)
+                  Email = currentEmail
+                  Avatar = "" }
+            )
+
+        this.RefreshVisibleParticipants()
+        this.OnPropertyChanged "HasParticipants"
+        this.OnPropertyChanged "ParticipantsTitle"
+
     member this.SelectedContact
         with get () = selectedContact
         and set value =
@@ -180,9 +284,15 @@ type MainViewModel() as this =
                 this.OnPropertyChanged "ActiveChatTitle"
                 this.OnPropertyChanged "ActiveChatSubtitle"
                 messages.Clear()
+                this.OnPropertyChanged "HasMessages"
+                this.OnPropertyChanged "ShowEmptyChatHint"
+                this.RefreshParticipants()
                 this.RestartChatStream()
 
     member this.HasContact = not (obj.ReferenceEquals(selectedContact, null))
+
+    /// Диалог выбран, но сообщений ещё нет — показываем подсказку.
+    member this.ShowEmptyChatHint = this.HasContact && not this.HasMessages
 
     member this.ActiveChatTitle =
         if obj.ReferenceEquals(selectedContact, null) then "Нет диалога" else selectedContact.Nick
@@ -197,7 +307,15 @@ type MainViewModel() as this =
         with get () = newMessageText
         and set value = this.SetProperty(&newMessageText, value) |> ignore
 
+    member this.InsertEmojiCommand =
+        RelayCommand<string>(fun emoji ->
+            if not (String.IsNullOrWhiteSpace emoji) then
+                this.NewMessageText <- this.NewMessageText + emoji)
+
     member this.Messages = messages
+
+    /// Пустой диалог подсказывает, что делать дальше, вместо чёрной дыры.
+    member this.HasMessages = messages.Count > 0
 
     // --- звонки (макет) ---
 
@@ -233,6 +351,9 @@ type MainViewModel() as this =
                         message.FromUid = client.Uid
                     )
                 )
+
+            this.OnPropertyChanged "HasMessages"
+            this.OnPropertyChanged "ShowEmptyChatHint"
 
     member private this.StopStreams() =
         for source in [ chatStream; usersStream ] do
@@ -346,6 +467,8 @@ type MainViewModel() as this =
             for user in peers do
                 contacts.Add user
 
+            this.RefreshVisibleContacts()
+
             let restored =
                 if selectedUid = "" then None
                 else contacts |> Seq.tryFind (fun user -> user.Uid = selectedUid)
@@ -382,6 +505,7 @@ type MainViewModel() as this =
                     this.CurrentEmail <- session.Email
                     this.IsLoggedIn <- true
                     this.AuthPassword <- ""
+                    this.SetChatListMode "dm"
                     this.SetSidebarMode "dm"
                     do! this.LoadContactsAsync()
                     this.StartUsersStream()
@@ -406,7 +530,15 @@ type MainViewModel() as this =
         this.CurrentEmail <- ""
         this.SelectedContact <- Unchecked.defaultof<UserProfile>
         this.Messages.Clear()
+        this.OnPropertyChanged "HasMessages"
+        this.OnPropertyChanged "ShowEmptyChatHint"
         this.Contacts.Clear()
+        this.VisibleContacts.Clear()
+        this.SearchText <- ""
+        this.Participants.Clear()
+        this.VisibleParticipants.Clear()
+        this.ParticipantSearchText <- ""
+        this.SetChatListMode "dm"
         this.LastError <- ""
         this.IsDeleteConfirm <- false
         this.SetSidebarMode "dm"
